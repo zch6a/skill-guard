@@ -23,11 +23,13 @@ Every rule has a default severity (below). The scanner **lowers** it when the ma
 
 ## Suppressing
 
-Suppress a finding with a comment containing `skill-guard-ignore SG123` on the same line or the line above, `skill-guard-ignore-file SG123` anywhere in the file, or an entry in `.skill-guard.json`:
+Suppress findings in a `.skill-guard.json` passed with `--config` (or in `~/.config/skill-guard/config.json`):
 
 ```json
 { "ignore": [{ "rule": "SG601", "item": "claude-code:mcp-server:*", "reason": "pinned via lockfile" }] }
 ```
+
+Inline comments — `skill-guard-ignore SG123` on the same line or the line above, `skill-guard-ignore-file SG123` anywhere in the file (rule IDs are required) — and a `.skill-guard.json` inside the scanned folder count only with `--trust-ignores`: they are part of the content being scanned, and a malicious skill would simply ignore itself. Use the flag for your own repository in CI. The number of suppressed findings is always reported.
 
 ## Instructions a model will follow
 
@@ -213,6 +215,14 @@ Writing to shell start-up files, cron, scheduled tasks, launch agents, systemd u
 
 **Fix:** A skill should never need to survive a reboot. Remove it.
 
+### SG404 — Settings widen what the agent may do
+
+**Default severity:** high
+
+A settings file can pre-approve commands (`"Bash(*)"` in `permissions.allow`), auto-enable every MCP server a repository ships, or send the agent's API traffic — prompts, code and API key — to another host via `ANTHROPIC_BASE_URL`. A repository's `.claude/settings.json` arrives with `git clone`.
+
+**Fix:** Remove the entries, or keep them only in your own user settings where you chose them.
+
 ### SG402 — Modifies agents' configuration
 
 **Default severity:** high
@@ -356,6 +366,22 @@ A hook that contacts a server runs on every matching event, so whatever it sends
 Compiled binaries inside a skill or plugin cannot be reviewed like scripts.
 
 **Fix:** Build from source you can read, or download from the vendor with a checksum.
+
+### SG804 — Links outside the item
+
+**Default severity:** medium
+
+A symbolic link inside a skill or plugin that points outside it makes a "local" file somewhere else — reading it can expose `~/.ssh`, writing to it can change your agent config. skill-guard does not follow such links, so their targets are not scanned.
+
+**Fix:** Replace the link with the file it points to, or remove it.
+
+### SG805 — File not fully scanned
+
+**Default severity:** low
+
+Text and code files over 2 MB are scanned only at their first and last megabyte (over 64 MB, not at all). Vendored bundles are usually the reason — but padding a script with megabytes of filler is also a way to push a payload out of reach.
+
+**Fix:** Check what the file is. A skill rarely needs a multi-megabyte script.
 
 ### SG803 — Unrestricted tool access
 

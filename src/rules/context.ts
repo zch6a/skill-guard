@@ -2,7 +2,8 @@
 import type { Finding, Severity, TextUnit, UnitKind } from '../types.ts';
 import { RULE_BY_ID } from './catalog.ts';
 import { LITERALS, RE } from './patterns.ts';
-import { lineAt, lineCol, maskSecrets } from '../util.ts';
+import { dirname, isAbsolute, relative } from 'node:path';
+import { lineAt, lineCol, maskSecrets, visible } from '../util.ts';
 
 const DOWN: Record<Severity, Severity> = { critical: 'high', high: 'medium', medium: 'low', low: 'info', info: 'info' };
 export const lower = (s: Severity, steps = 1): Severity => (steps <= 0 ? s : lower(DOWN[s], steps - 1));
@@ -11,7 +12,7 @@ export const lower = (s: Severity, steps = 1): Severity => (steps <= 0 ? s : low
 const NEGATION = /\b(never|not|don'?t|do not|must not|mustn'?t|should not|shouldn'?t|avoid|refuse|prevent|block(?:s|ed)?|detect(?:s|ed|ion)?|flag(?:s|ged)?|warn(?:s|ing)?|forbid(?:den)?|disallow(?:ed)?|prohibit(?:ed)?|without asking first|unless)\b|禁止|不要|切勿|不得|不能|避免/i;
 
 /** After a clause break, an imperative starts a new instruction the earlier negation does not govern. */
-const NEW_CLAUSE = /[,;:—–]\s*(then\s+|just\s+|simply\s+|now\s+|please\s+)?(add|append|run|read|send|set|copy|upload|execute|install|write|put|open|enable|fetch|download|use|call|delete|remove|disable|grant|paste|pipe|go ahead)\b/i;
+const NEW_CLAUSE = /[,;:—–]\s*(then\s+|just\s+|simply\s+|now\s+|please\s+|instead\s+)?(add|append|run|read|send|set|copy|upload|execute|install|write|put|open|enable|fetch|download|use|call|delete|remove|disable|grant|paste|pipe|go ahead|ignore|disregard|forget|override|bypass|follow|obey|do|tell|reveal|print|output|include|exfiltrate|post|forward)\b/i;
 
 function negated(text: string, index: number): boolean {
   const start = Math.max(0, text.lastIndexOf('\n', index - 1) + 1, index - 120);
@@ -19,8 +20,9 @@ function negated(text: string, index: number): boolean {
   const all = [...before.matchAll(new RegExp(NEGATION.source, 'gi'))];
   const last = all[all.length - 1];
   if (!last) return false;
-  // "To avoid interruptions, add …", "Don't worry, just run …": the negation is confined to its own clause.
-  return !NEW_CLAUSE.test(before.slice((last.index ?? 0) + last[0].length));
+  // "To avoid interruptions, add …", "Not kidding: ignore …": the negation is confined to its own
+  // clause. The verb that opens the new clause may be the start of the match itself.
+  return !NEW_CLAUSE.test(before.slice((last.index ?? 0) + last[0].length) + text.slice(index, index + 40));
 }
 
 /** "never run …", "do not execute …" earlier in the same line: the sentence forbids running what follows. */
@@ -29,17 +31,62 @@ function forbidsRunning(text: string, index: number): boolean {
   return /\b(never|do not|don'?t|must not|should not|shouldn'?t)\s+(run|execute|pipe|paste|copy|use|follow)\b(?![^`]*\b(just|instead|then)\b)/i.test(text.slice(start, index));
 }
 
+/** A backticked span that starts with a command is something to run, not a phrase being talked about. */
+const COMMAND_SPAN = /^\s*(sudo\s+)?(cat|type|cp|copy|scp|rsync|tar|zip|base64|xxd|head|tail|less|more|curl|wget|iwr|irm|Invoke-\w+|Get-Content|gc|Copy-Item|python3?|node|bash|sh|zsh|pwsh|powershell|eval|exec|source|echo|printf|nc|ssh|git|npx|uvx|pip3?|npm|chmod|rm|mv|open|start)\b/i;
+
+/** Inside `…` that starts with a command: "Run `cat ~/.aws/credentials` now" is an instruction, not a mention. */
+function inCommandSpan(text: string, index: number, length: number): boolean {
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1;
+  const head = text.slice(lineStart, index);
+  return (head.match(/`/g) ?? []).length % 2 === 1 && COMMAND_SPAN.test(head.slice(head.lastIndexOf('`') + 1) + text.slice(index, index + length));
+}
+
 /** The match sits inside quotes — the text is *talking about* the phrase (e.g. warning about it), not saying it. */
 function quoted(text: string, index: number, length: number): boolean {
   const before = text.slice(Math.max(0, index - 3), index);
   const after = text.slice(index + length, index + length + 40);
-  return /["“'`‘「(]\s*$/.test(before) || (/["“`‘「]/.test(text.slice(Math.max(0, index - 40), index)) && /^[^"”`’」\n]{0,40}["”`’」]/.test(after));
+  // Parentheses are asides, not quotes.
+  return /["“'`‘「]\s*$/.test(before) || (/["“`‘「]/.test(text.slice(Math.max(0, index - 40), index)) && /^[^"”`’」\n]{0,40}["”`’」]/.test(after));
 }
 
-/** Test suites and fixtures are full of attack strings on purpose; they are not what the agent runs. */
-export function isTestPath(file: string | undefined): boolean {
+const TEST_PATH = /(^|[\\/])(tests?|__tests__|spec|specs|fixtures?|testdata|test-data|__fixtures__|e2e)[\\/]|\.(test|spec)\.[a-z]+$|(^|[\\/])test_[^\\/]+\.py$|_test\.(py|go)$/i;
+
+/**
+ * Test suites and fixtures are full of attack strings on purpose; they are not what the agent runs.
+ * With `base`, only the part of the path *below* it counts: a skill folder named "fixtures", or a
+ * repository cloned into ~/test/, must not lower everything inside it.
+ */
+export function isTestPath(file: string | undefined, base?: string): boolean {
   if (!file) return false;
-  return /[\\/](tests?|__tests__|spec|specs|fixtures?|testdata|test-data|__fixtures__|e2e)[\\/]|\.(test|spec)\.[a-z]+$|(^|[\\/])test_[^\\/]+\.py$|_test\.(py|go)$/i.test(file);
+  if (base) {
+    const rel = relative(base, file);
+    if (!rel.startsWith('..') && !isAbsolute(rel)) return TEST_PATH.test(rel);
+  }
+  return TEST_PATH.test(file);
+}
+
+/** Where test-path detection starts for a unit: the scan root of a repository scan, else the item's own folder. */
+export function testBase(unit: TextUnit): string | undefined {
+  const it = unit.item;
+  if (!it.path) return undefined;
+  return it.scanRoot ?? (it.kind === 'skill' || it.kind === 'plugin' || it.kind === 'dsh-plugin' ? it.path : dirname(it.path));
+}
+
+/**
+ * The item's own folder name never makes it a test (a skill called "fixtures" is just a skill):
+ * only folders *above* the item, inside the scan root, and paths *inside* it count.
+ */
+export function inTests(unit: TextUnit): boolean {
+  const it = unit.item;
+  if (!unit.file) return false;
+  if (!it.path) return isTestPath(unit.file); // an ad-hoc item (library use): no root to measure from
+  const itemRoot = it.kind === 'skill' || it.kind === 'plugin' || it.kind === 'dsh-plugin' ? it.path : dirname(it.path);
+  if (!unit.file) return false;
+  const insideItem = relative(itemRoot, unit.file);
+  if (insideItem.startsWith('..') || isAbsolute(insideItem)) return isTestPath(unit.file, testBase(unit));
+  const above = it.scanRoot ? relative(it.scanRoot, dirname(itemRoot)) : '';
+  const aboveOk = above !== '' && !above.startsWith('..') && !isAbsolute(above);
+  return TEST_PATH.test(insideItem) || (aboveOk && TEST_PATH.test(`${above}/`));
 }
 
 /**
@@ -49,10 +96,13 @@ export function isTestPath(file: string | undefined): boolean {
 function commentish(text: string, index: number, length: number, file = ''): boolean {
   const lineStart = text.lastIndexOf('\n', index - 1) + 1;
   const head = text.slice(lineStart, index);
-  if (/^\s*(#|\/\/|\*|\/\*|--\s|REM\s|;)/i.test(head) || /\s(#|\/\/)\s/.test(head)) return true;
-  // Backticks are Markdown-in-docstrings in Python/shell — but real template strings in JS/TS.
-  const jsLike = /\.(m?[jt]sx?|cjs|cts|mts)$/i.test(file);
-  if (!jsLike && /`[^`]*$/.test(head) && /^[^`\n]*`/.test(text.slice(index + length))) return true;
+  if (/^\s*(#|\/\/|\*|\/\*|--\s|REM\s|;)/i.test(head)) return true;
+  // A trailing comment — after removing string literals, so `echo " # "; curl … | sh` is still code.
+  if (/\s(#|\/\/)\s/.test(head.replace(/"(?:[^"\\\n]|\\.)*"|'[^'\n]*'/g, '""'))) return true;
+  // Backticks and triple quotes are Markdown-in-docstrings only in Python. In shell a backtick span
+  // runs, in JS it is a template string.
+  if (!/\.(py|pyw)$/i.test(file)) return false;
+  if (/`[^`]*$/.test(head) && /^[^`\n]*`/.test(text.slice(index + length))) return true;
   const before = text.slice(0, index);
   return ((before.match(/"""|'''/g) ?? []).length & 1) === 1;
 }
@@ -63,8 +113,29 @@ export const IMPERATIVE_NEAR = /\b(use|run|set|enable|add|pass|launch|start|alwa
 
 /** Inside a fenced code block in Markdown: an example, not a directive (but still code the model may run). */
 export function inFence(text: string, index: number): boolean {
-  const before = text.slice(0, index);
+  // Fences inside HTML comments do not count: an invisible "<!--\n```\n-->" must not flip the rest of the file.
+  const before = withoutComments(text).slice(0, index);
   return ((before.match(/^\s*```/gm) ?? []).length & 1) === 1;
+}
+
+let commentsFor: string | null = null;
+let commentsOut = '';
+/** The text with HTML comment bodies blanked (same length, same newlines). Found with indexOf: linear. */
+function withoutComments(text: string): string {
+  if (text === commentsFor) return commentsOut;
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const s = text.indexOf('<!--', i);
+    if (s < 0) break;
+    const e = text.indexOf('-->', s + 4);
+    const end = e < 0 ? text.length : e + 3;
+    out += text.slice(i, s) + text.slice(s, end).replace(/[^\n]/g, ' ');
+    i = end;
+  }
+  commentsFor = text;
+  commentsOut = out + text.slice(i);
+  return commentsOut;
 }
 
 export interface Ctx {
@@ -81,7 +152,7 @@ export function emit(ctx: Ctx, ruleId: string, index: number, severity: Severity
     rule: ruleId,
     severity,
     title: rule.title,
-    message,
+    message: visible(message),
     item: unit.item.id,
     evidence: maskSecrets(evidence ?? lineAt(unit.text, index)),
   };
@@ -109,10 +180,10 @@ export function contextual(ruleId: string, ctx: Ctx, index: number, perKind: Par
   if (prose && /^[`"'\s)]{0,4}(does not|doesn'?t|is not|isn'?t|won'?t|will not|should not|must not|cannot|can'?t)\b/i.test(unit.text.slice(index + length, index + length + 60))) sev = lower(sev, 2);
   // Command rules skip the quoted downgrade (a backticked command is still a command) — unless a
   // negation directly governs running it: "Never run `curl … | sh`".
-  if (prose && length && quoted(unit.text, index, length) && (quotes || forbidsRunning(unit.text, index))) sev = lower(sev, 2);
+  if (prose && length && quoted(unit.text, index, length) && ((quotes && !inCommandSpan(unit.text, index, length)) || forbidsRunning(unit.text, index))) sev = lower(sev, 2);
   if (prose && inFence(unit.text, index)) sev = lower(sev, 1);
   if (unit.kind === 'code' && commentish(unit.text, index, length, unit.file)) sev = lower(sev, 2);
-  if (isTestPath(unit.file)) sev = lower(sev, 2);
+  if (inTests(unit)) sev = lower(sev, 2);
   return sev;
 }
 

@@ -72,6 +72,29 @@ export function splitPackage(spec: string): { name: string; version: string } {
 const RUNNERS = /^(npx|bunx|pnpx)(\.cmd|\.exe)?$|^(uvx|pipx)(\.exe)?$/i;
 const SECRET_VALUE = /\b(sk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|(AKIA|ASIA)[A-Z0-9]{16}|AIza[0-9A-Za-z_-]{35}|xox[abposr]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|Bearer\s+[A-Za-z0-9._~+/=-]{20,}|(sk|rk)_live_[A-Za-z0-9]{20,})\b/;
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host || url.slice(0, 80);
+  } catch {
+    return url.slice(0, 80);
+  }
+}
+
+const SHELLS = /^(cmd|cmd\.exe|sh|bash|zsh|dash|powershell|powershell\.exe|pwsh|pwsh\.exe)$/i;
+
+/** The real command behind a shell wrapper: `cmd /c npx -y x` → npx, ["-y", "x"]. */
+export function unwrapShell(cmd: string, args: string[]): { cmd: string; args: string[] } {
+  if (!SHELLS.test(cmd)) return { cmd, args };
+  const i = args.findIndex((a) => /^(\/c|\/k|-c|-Command|-command)$/i.test(a));
+  if (i < 0) return { cmd, args };
+  let rest = args.slice(i + 1);
+  // sh -c "npx -y pkg" passes one string; cmd /c npx -y pkg passes words.
+  if (rest.length === 1) rest = (rest[0] as string).trim().split(/\s+/);
+  rest = rest.filter((a) => !/^\/[dsq]$/i.test(a));
+  const [first, ...more] = rest;
+  return first ? { cmd: first.replace(/^.*[\\/]/, ''), args: more } : { cmd, args };
+}
+
 export function scanMcp(item: Item): Finding[] {
   const out: Finding[] = [];
   const s = item.mcp;
@@ -82,9 +105,10 @@ export function scanMcp(item: Item): Finding[] {
     if (evidence) f.evidence = maskSecrets(evidence);
     out.push(f);
   };
-  const cmd = (s.command ?? '').replace(/^.*[\\/]/, '');
-  const args = s.args;
-  const full = [s.command ?? '', ...args].join(' ');
+  const full = [s.command ?? '', ...s.args].join(' ');
+  // `cmd /c npx -y pkg` (the usual Windows form) and `sh -c "npx pkg"`: judge the command inside.
+  const wrapper = (s.command ?? '').replace(/^.*[\\/]/, '');
+  const { cmd, args } = unwrapShell(wrapper, s.args);
 
   // SG601 unpinned package runners
   if (RUNNERS.test(cmd)) {
@@ -107,10 +131,11 @@ export function scanMcp(item: Item): Finding[] {
   if (s.url) {
     const local = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)(:|\/|$)/i.test(s.url);
     if (/^http:\/\//i.test(s.url) && !local) push('SG602', 'high', `Connects to ${s.url} without TLS.`, s.url);
-    else if (!local) push('SG608', 'low', `Tools come from ${new URL(s.url).host}.`, s.url);
+    // Not every value is a URL (`${MCP_URL:-https://…}/mcp`): one odd config must not abort the whole scan.
+    else if (!local) push('SG608', 'low', `Tools come from ${hostOf(s.url)}.`, s.url);
   }
   // SG603 plaintext secrets
-  const secretPlaces: [string, string][] = [...Object.entries(s.env).map(([k, v]) => [`env ${k}`, v] as [string, string]), ...Object.entries(s.headers).map(([k, v]) => [`header ${k}`, v] as [string, string]), ...args.map((a, i) => [`argument ${i + 1}`, a] as [string, string])];
+  const secretPlaces: [string, string][] = [...Object.entries(s.env).map(([k, v]) => [`env ${k}`, v] as [string, string]), ...Object.entries(s.headers).map(([k, v]) => [`header ${k}`, v] as [string, string]), ...s.args.map((a, i) => [`argument ${i + 1}`, a] as [string, string])];
   if (s.url) secretPlaces.push(['url', s.url]);
   for (const [where, value] of secretPlaces) {
     if (/^\$\{?[A-Z_][A-Z0-9_]*\}?$|^\{env:|^%[A-Z_]+%$/.test(value)) continue; // a reference, not a value
@@ -121,11 +146,12 @@ export function scanMcp(item: Item): Finding[] {
     }
   }
   // SG604 shell wrappers
-  if (/^(bash|sh|zsh|dash|cmd|cmd\.exe|powershell|powershell\.exe|pwsh|pwsh\.exe)$/i.test(cmd) && args.some((a) => /^(-c|\/c|\/k|-Command|-command|-EncodedCommand|-enc|-e)$/i.test(a))) {
+  // SG604 judges the wrapper itself (the command inside was judged above).
+  if (SHELLS.test(wrapper) && s.args.some((a) => /^(-c|\/c|\/k|-Command|-command|-EncodedCommand|-enc|-e)$/i.test(a))) {
     // Just launching a local script is ordinary; pipes, chaining or network access in the inline command are not.
-    const inline = args.join(' ');
+    const inline = s.args.join(' ');
     const simple = !/[|&;`$<>]|\b(curl|wget|iwr|irm|Invoke-|http)/i.test(inline.replace(/^\/d \/s \/c\s+/, ''));
-    push('SG604', simple ? 'low' : 'medium', `Starts through ${cmd} with an inline command${simple ? ' (launches a local script)' : ''}.`, full);
+    push('SG604', simple ? 'low' : 'medium', `Starts through ${wrapper} with an inline command${simple ? ' (launches a local script)' : ''}.`, full);
   }
   // SG605 broad filesystem
   const H = home().replace(/\\/g, '/').toLowerCase().replace(/\/$/, '');

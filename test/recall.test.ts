@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -22,7 +22,9 @@ export function scanAttack(a: Attack): Finding[] {
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, content);
   }
-  return scanItems(discoverPath(root)).findings;
+  // 'junction' works without admin rights on Windows and is ignored elsewhere (a normal symlink).
+  for (const [link, target] of Object.entries(a.links ?? {})) symlinkSync(join(root, target), join(root, link), 'junction');
+  return scanItems(discoverPath(root), a.options ?? {}).findings;
 }
 
 const caught = (a: Attack, found: Finding[]) => a.expect.every((e) => found.some((f) => f.rule === e.rule && atLeast(f.severity, e.min)));

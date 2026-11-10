@@ -19,13 +19,13 @@
     "repo": "mattpocock/skills",
     "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
     "expect": [],
-    "items": 40
+    "items": 42
   },
   {
     "repo": "obra/superpowers",
     "commit": "22f0b463e7a5e579904dd6211a520321035526f7",
     "expect": [],
-    "items": 17
+    "items": 19
   },
   {
     "repo": "wshobson/agents",

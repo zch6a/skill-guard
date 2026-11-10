@@ -22,8 +22,9 @@ export const HOST_LABELS: Record<Host, string> = {
  * - `mcp-server`: an MCP server definition in some agent's config
  * - `context`: instruction files loaded into every conversation (CLAUDE.md, AGENTS.md, .cursorrules)
  * - `dsh-plugin`: a DeepSeek Harness (Cordis) plugin package
+ * - `settings`: an agent settings file's permission rules and environment (Claude Code settings.json)
  */
-export type ItemKind = 'skill' | 'plugin' | 'command' | 'subagent' | 'hook' | 'mcp-server' | 'context' | 'dsh-plugin';
+export type ItemKind = 'skill' | 'plugin' | 'command' | 'subagent' | 'hook' | 'mcp-server' | 'context' | 'dsh-plugin' | 'settings';
 
 export interface McpServer {
   transport: 'stdio' | 'http' | 'sse' | 'unknown';
@@ -40,6 +41,8 @@ export interface Hook {
   matcher?: string;
   type: string;
   command?: string;
+  /** `type: "prompt"` hooks: text given to a model on the event. */
+  prompt?: string;
 }
 
 export interface Item {
@@ -59,6 +62,10 @@ export interface Item {
   hook?: Hook;
   /** Parsed manifest / frontmatter, for rules that look at metadata. */
   meta: Record<string, unknown>;
+  /** For repository scans: the scanned folder (test-path detection starts there, not at the drive root). */
+  scanRoot?: string;
+  /** Symbolic links inside the item that point outside it (not followed). */
+  outsideLinks?: string[];
 }
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';

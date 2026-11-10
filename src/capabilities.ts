@@ -3,7 +3,7 @@
  * "this skill ships code that talks to the network and writes files".
  * Shown by `skill-guard list` and included in JSON output.
  */
-import { SHELL_FILE, isTestPath } from './rules/context.ts';
+import { SHELL_FILE, inTests } from './rules/context.ts';
 import type { Capability, Finding, Item, TextUnit } from './types.ts';
 
 export const CAPABILITY_LABEL: Record<Capability, string> = {
@@ -66,7 +66,7 @@ export function capabilitiesOf(item: Item, units: TextUnit[], findings: Finding[
   if (item.kind === 'mcp-server' && item.mcp && (item.mcp.transport === 'http' || item.mcp.transport === 'sse')) caps.add('network');
 
   // Test suites describe behaviour in strings and fixtures; they are not what the agent runs.
-  for (const u of executable.filter((x) => !isTestPath(x.file))) {
+  for (const u of executable.filter((x) => !inTests(x))) {
     const text = u.kind === 'code' ? stripComments(u.text) : u.text;
     const shellish = u.kind === 'command' || SHELL_FILE.test(u.file ?? '');
     if (makesNetworkCalls(text, shellish)) caps.add('network');

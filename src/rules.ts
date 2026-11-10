@@ -11,4 +11,4 @@ export { RULES, RULE_BY_ID } from './rules/catalog.ts';
 export { isTestPath } from './rules/context.ts';
 export { scanUnit, talksToNetwork } from './rules/text.ts';
 export { scanMcp, splitPackage } from './rules/mcp.ts';
-export { isBinaryAsset, scanHook, scanPackageJson, scanSkillMeta } from './rules/structure.ts';
+export { isBinaryAsset, scanHook, scanOutsideLinks, scanPackageJson, scanSettings, scanSkillMeta } from './rules/structure.ts';

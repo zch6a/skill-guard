@@ -35,6 +35,7 @@ export const RULES: RuleInfo[] = [
 
   // --- persistence and tampering
   { id: 'SG401', title: 'Installs persistence', severity: 'high', why: 'Writing to shell start-up files, cron, scheduled tasks, launch agents, systemd units or the Windows Run key makes code run again long after the agent session ends.', fix: 'A skill should never need to survive a reboot. Remove it.' },
+  { id: 'SG404', title: 'Settings widen what the agent may do', severity: 'high', why: "A settings file can pre-approve commands (`\"Bash(*)\"` in `permissions.allow`), auto-enable every MCP server a repository ships, or send the agent's API traffic — prompts, code and API key — to another host via `ANTHROPIC_BASE_URL`. A repository's `.claude/settings.json` arrives with `git clone`.", fix: 'Remove the entries, or keep them only in your own user settings where you chose them.' },
   { id: 'SG402', title: "Modifies agents' configuration", severity: 'high', why: "Writing to `.claude/settings.json`, `~/.claude.json`, `~/.codex/config.toml`, MCP configs, CLAUDE.md or AGENTS.md can add hooks or servers that run on every future session — a technique seen in real npm supply-chain attacks against coding agents.", fix: 'Agent configuration should be changed by you, not by a skill. Remove the write.' },
   { id: 'SG403', title: 'Tampers with git hooks', severity: 'medium', why: 'Writing `.git/hooks` or changing `core.hooksPath` runs code on every commit or checkout.', fix: 'Remove it unless it is a documented, opt-in feature.' },
 
@@ -60,6 +61,8 @@ export const RULES: RuleInfo[] = [
   // --- packaging
   { id: 'SG801', title: 'Install script', severity: 'medium', why: '`preinstall`/`install`/`postinstall`/`prepare` scripts run when the package is installed — before you ever use it.', fix: 'Check what the script does; prefer packages that need none.' },
   { id: 'SG802', title: 'Bundled executable', severity: 'medium', why: 'Compiled binaries inside a skill or plugin cannot be reviewed like scripts.', fix: 'Build from source you can read, or download from the vendor with a checksum.' },
+  { id: 'SG804', title: 'Links outside the item', severity: 'medium', why: 'A symbolic link inside a skill or plugin that points outside it makes a "local" file somewhere else — reading it can expose `~/.ssh`, writing to it can change your agent config. skill-guard does not follow such links, so their targets are not scanned.', fix: 'Replace the link with the file it points to, or remove it.' },
+  { id: 'SG805', title: 'File not fully scanned', severity: 'low', why: 'Text and code files over 2 MB are scanned only at their first and last megabyte (over 64 MB, not at all). Vendored bundles are usually the reason — but padding a script with megabytes of filler is also a way to push a payload out of reach.', fix: 'Check what the file is. A skill rarely needs a multi-megabyte script.' },
   { id: 'SG803', title: 'Unrestricted tool access', severity: 'low', why: 'The skill asks for unrestricted shell access (`allowed-tools: Bash` or `*`), so anything its instructions say can be executed without per-command approval.', fix: 'Scope it, e.g. `Bash(git status:*)`.' },
 ];
 

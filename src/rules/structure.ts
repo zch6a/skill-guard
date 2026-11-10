@@ -54,7 +54,47 @@ export function scanSkillMeta(item: Item, skillMd: string): Finding[] {
   return out;
 }
 
-const BINARY_EXT = /\.(exe|dll|so|dylib|bin|node|msi|scr|com|jar|wasm|pyd|pyc|class|elf|app|deb|rpm)$/i;
+const BROAD_ALLOW = /^(Bash|Shell|PowerShell)(\(\s*\*?\s*\))?$|^\*$|^Bash\(\s*(curl|wget|sh|bash|zsh|python3?|node|sudo|rm|chmod|eval|iwr|irm)\b[^)]*\*\s*\)$/i;
+const LOCAL_URL = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)(:|\/|$)/i;
+const SECRET_KEY = /(KEY|TOKEN|SECRET|PASSWORD|PASS|AUTH|CREDENTIAL)/i;
+
+/**
+ * Claude Code settings: permission rules, API redirection and MCP auto-approval. A repository's
+ * settings come with a clone and get full severity; your own user settings are your choice.
+ */
+export function scanSettings(item: Item): Finding[] {
+  const out: Finding[] = [];
+  const m = item.meta;
+  const own = item.host !== 'repo';
+  const push = (rule: string, sev: 'high' | 'medium' | 'low', message: string, evidence?: string) => {
+    const r = RULE_BY_ID.get(rule)!;
+    const severity = own ? (sev === 'high' ? 'low' : 'info') : sev;
+    out.push({ rule, severity, title: r.title, message: own ? `${message} (your user settings)` : message, item: item.id, file: item.path, ...(evidence ? { evidence: maskSecrets(evidence) } : {}) });
+  };
+  const perms = m.permissions && typeof m.permissions === 'object' ? (m.permissions as Record<string, unknown>) : {};
+  const mode = String(perms.defaultMode ?? m.defaultMode ?? '');
+  if (/^bypassPermissions$/i.test(mode)) push('SG108', 'high', 'Sets the default permission mode to bypassPermissions: no approval prompts.', `defaultMode: ${mode}`);
+  const allow = Array.isArray(perms.allow) ? perms.allow.map(String) : [];
+  const broad = allow.filter((a) => BROAD_ALLOW.test(a.trim()));
+  if (broad.length) push('SG404', 'high', `Pre-approves ${broad.map((b) => `"${b}"`).join(', ')} — commands run without asking.`, `permissions.allow: ${broad.join(', ')}`);
+  if (m.enableAllProjectMcpServers === true) push('SG404', 'medium', 'Auto-approves every MCP server the project defines.', 'enableAllProjectMcpServers: true');
+  const env = m.env && typeof m.env === 'object' ? (m.env as Record<string, unknown>) : {};
+  for (const [k, raw] of Object.entries(env)) {
+    const v = String(raw ?? '');
+    if (/(_BASE_URL|_API_URL|_ENDPOINT|^HTTPS?_PROXY|^ALL_PROXY)$/i.test(k) && /^https?:\/\//i.test(v) && !LOCAL_URL.test(v)) push('SG404', 'high', `Sends the agent's API traffic through ${k}=${v.slice(0, 80)}.`, `env.${k} = ${v}`);
+    else if (SECRET_KEY.test(k) && v.length >= 16 && !/^\$\{?\w+\}?$/.test(v)) push('SG603', 'medium', `A credential is written in plain text (env ${k}).`, `env.${k} = ${v}`);
+  }
+  return out;
+}
+
+/** Symbolic links that leave the item (not followed during the scan). */
+export function scanOutsideLinks(item: Item): Finding[] {
+  const r = RULE_BY_ID.get('SG804')!;
+  const links = item.outsideLinks ?? [];
+  return [{ rule: 'SG804', severity: 'medium', title: r.title, message: `${links.length} link${links.length > 1 ? 's' : ''} point${links.length > 1 ? '' : 's'} outside the item and ${links.length > 1 ? 'were' : 'was'} not scanned.`, item: item.id, file: links[0] as string, evidence: links.slice(0, 3).join(', ') }];
+}
+
+const BINARY_EXT =/\.(exe|dll|so|dylib|bin|node|msi|scr|com|jar|wasm|pyd|pyc|class|elf|app|deb|rpm)$/i;
 
 export function isBinaryAsset(file: string): boolean {
   return BINARY_EXT.test(file);

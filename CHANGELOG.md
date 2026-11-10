@@ -2,6 +2,38 @@
 
 All notable changes are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [1.0.0] — 2026-11-11
+
+The first stable release: rule IDs, item IDs, options, exit codes, the JSON/SARIF shapes and lock files are now covered by [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+Before tagging it, an independent review of the whole source looked for ways to make the scanner itself look away. It found 20 issues, 19 confirmed by running; all are fixed, and each is now a case in the recall corpus (`docs/RECALL.md`, 57 of 58 caught).
+
+### Security
+
+- **On Linux and macOS no file inside a skill was scanned** (`isTextFile` returned false for every POSIX path). Windows was unaffected, which is why it went unnoticed.
+- **Scanned content could suppress its own findings** with a `skill-guard-ignore-file` comment. Inline comments and `.skill-guard.json` inside the scanned content now count only with `--trust-ignores`; rule IDs are required; the suppressed count is always shown. **Behaviour change:** add `--trust-ignores` to CI runs of your own repository if you rely on inline ignores.
+- A `plugin.json` at a repository root hid its `CLAUDE.md`, settings and commands (two of the five public repositories in the precision corpus had their root `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` unscanned because of it).
+- File caps counted images, so 400 assets could push `SKILL.md` out; truncated listings are now reported. Extensionless scripts, scripts SKILL.md points at inside `node_modules/`, and links leaving an item (new **SG804**) are handled.
+- Downgrades an attacker could trigger: a skill folder named `fixtures`/`test`, "Not kidding: ignore …", an override in parentheses, a credential read in a backticked command, a hidden `<!--` fence that flipped code-block parity, shell backticks / `# """` / `" # "` read as comments — all fixed.
+- Keywords split by a zero-width joiner, soft hyphen or look-alike Cyrillic/Greek letters are matched (rules also run on a de-obfuscated skeleton), and mixed-script words are reported (SG103).
+- HTML comments of any length and hidden SVG/HTML text with nested tags are read.
+- ESC sequences from scanned files could rewrite the terminal report; control characters are now neutralised in all output.
+- One unparseable MCP `url` aborted the whole scan; a slow `fetch(` pattern could take seconds per file.
+
+### Added
+
+- `.claude/settings.json` beyond hooks: `statusLine` / `apiKeyHelper` / credential-helper commands are scanned like hooks, `prompt` hooks' text is scanned, and new **SG404** flags pre-approved commands, auto-enabled MCP servers and API base-URL redirection (full severity in a repository, low in your own user settings).
+- MCP servers: modules the server imports are scanned for tool descriptions; `cmd /c npx …` wrappers are unwrapped for pinning and typosquat checks; the server's `package.json` scripts are checked.
+- Plugins: custom `commands`/`agents`/`skills` paths from the manifest; scripts that plugin commands point at.
+- More instruction files: `CLAUDE.local.md`, `.windsurfrules`, `.clinerules`, `.windsurf/rules`, `.github/instructions`.
+- Files over 2 MB are scanned at their first and last megabyte (new **SG805**, low, says so); UTF-16 scripts are decoded; a NUL byte no longer hides a text file.
+- Files a SKILL.md tells the agent to read (`README.md`, …) are read as instructions.
+- `schema: 1` in JSON output; `docs/COMPATIBILITY.md`.
+
+### Changed
+
+- A full scan of this machine takes 3.5 s (was 2.2 s): oversized bundles are read instead of skipped, and text containing hidden or look-alike characters gets a second pass.
+
 ## [0.5.0] — 2026-11-11
 
 ### Fixed

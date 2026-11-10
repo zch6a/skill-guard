@@ -25,6 +25,7 @@ const KIND_LABEL: Record<Item['kind'], string> = {
   'mcp-server': 'MCP server',
   context: 'context file',
   'dsh-plugin': 'DSH plugin',
+  settings: 'settings',
 };
 
 export function inventoryLine(items: Item[]): string {
@@ -103,7 +104,8 @@ export function renderTerminal(result: ScanResult, opts: TerminalOptions): strin
     .filter((s) => n[s])
     .map((s) => sevColor(s)(`${n[s]} ${s}`))
     .join(c.dim(' · '));
-  if (!shown.length) out.push(`${c.green('✓')} ${c.bold(`No ${opts.min === 'info' ? '' : opts.min + '+ '}findings.`)}${hiddenLow ? c.dim(` (${plural(hiddenLow, 'lower-severity finding')} hidden; --min low to see)`) : ''}`);
+  // A suppressed count is always shown: "no findings" must never hide that something was silenced.
+  if (!shown.length) out.push(`${c.green('✓')} ${c.bold(`No ${opts.min === 'info' ? '' : opts.min + '+ '}findings.`)}${hiddenLow ? c.dim(` (${plural(hiddenLow, 'lower-severity finding')} hidden; --min low to see)`) : ''}${opts.suppressed ? c.yellow(` ${plural(opts.suppressed, 'finding')} suppressed.`) : ''}`);
   else {
     out.push(`${c.bold('Findings:')} ${summary}${hiddenLow ? c.dim(`  (${hiddenLow} below ${opts.min} hidden; --min low to see)`) : ''}${opts.suppressed ? c.dim(` · ${opts.suppressed} suppressed`) : ''}`);
     const top = shown[0]!;
@@ -221,7 +223,8 @@ export function renderDiff(changes: ItemChange[], lockPath: string): string {
     if (caps?.lost.length) out.push(`             ${c.dim('no longer: ' + caps.lost.map((x) => CAPABILITY_LABEL[x]).join(' '))}`);
     if (ch.status === 'added' && caps?.now.length) out.push(`             ${c.dim('can: ' + caps.now.map((x) => CAPABILITY_LABEL[x]).join(' '))}`);
     if (ch.before !== undefined) out.push(`             ${c.red('was ' + fit(ch.before, 100))}\n             ${c.green('now ' + fit(ch.entry.summary ?? '', 100))}`);
-    else if (ch.status === 'added' && ch.entry.summary) out.push(`             ${c.dim(fit(ch.entry.summary, 100))}`);
+    // A hook's name already contains its command; only show the summary when it adds something.
+    else if (ch.status === 'added' && ch.entry.summary && !ch.entry.name.includes(ch.entry.summary)) out.push(`             ${c.dim(fit(ch.entry.summary, 100))}`);
     if (ch.files) {
       for (const f of ch.files.added.slice(0, 5)) out.push(`             ${c.green('+ ' + f)}`);
       for (const f of ch.files.modified.slice(0, 5)) out.push(`             ${c.yellow('~ ' + f)}`);
@@ -236,7 +239,8 @@ export function renderDiff(changes: ItemChange[], lockPath: string): string {
 
 export function toJson(result: ScanResult & { suppressed?: number }, changes?: ItemChange[]): string {
   const items = result.items.map((i) => ({ id: i.id, kind: i.kind, host: i.host, name: i.name, path: i.path, description: i.description, parent: i.parent, files: i.files.length, capabilities: result.capabilities?.[i.id] ?? [], mcp: i.mcp, hook: i.hook }));
-  return JSON.stringify({ tool: 'skill-guard', version: VERSION, summary: counts(result.findings), items, findings: result.findings, skipped: result.skipped, ...(changes ? { changes } : {}) }, null, 2);
+  // `schema` changes only on a breaking change to this shape (see docs/COMPATIBILITY.md); fields may be added without one.
+  return JSON.stringify({ tool: 'skill-guard', version: VERSION, schema: 1, summary: counts(result.findings), items, findings: result.findings, skipped: result.skipped, ...(changes ? { changes } : {}) }, null, 2);
 }
 
 const SARIF_LEVEL: Record<Severity, 'error' | 'warning' | 'note'> = { critical: 'error', high: 'error', medium: 'warning', low: 'note', info: 'note' };

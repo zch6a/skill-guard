@@ -8,7 +8,7 @@ import { parseJsonc } from './parse.ts';
 import { renderDiff, renderExplain, renderInventory, renderRules, renderTerminal, toJson, toMarkdown, toSarif } from './report.ts';
 import { scanItems, type Suppression } from './scan.ts';
 import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Capability, type Host, type Item, type ScanResult, type Severity } from './types.ts';
-import { exists, home, isObject, prefetch, readText, tildify, withFsCacheAsync } from './util.ts';
+import { exists, home, isObject, prefetch, readText, takeTruncatedWalks, tildify, withFsCacheAsync } from './util.ts';
 import { VERSION } from './version.ts';
 
 const HELP = `${c.bold('skill-guard')} — find prompt injection, exfiltration and hidden instructions
@@ -33,6 +33,8 @@ ${c.bold('Options')}
       --json             JSON report on stdout
       --sarif <file>     Write SARIF 2.1.0 (for GitHub code scanning); "-" for stdout
       --md               Markdown report (PR comments, CI summaries)
+      --trust-ignores    Honour skill-guard-ignore comments and .skill-guard.json in the scanned files
+                         (only for repositories you own: scanned content could otherwise ignore itself)
       --config <file>    Suppressions file (default: .skill-guard.json in the scanned folder or ~/.config/skill-guard/)
       --lock <file>      Lock file for lock/diff (default: ~/.config/skill-guard/lock.json, or <path>/skill-guard.lock.json)
   -v, --verbose          Show every finding and skipped file
@@ -51,6 +53,7 @@ Everything runs locally. Nothing is executed, nothing is uploaded.
 const OPTIONS = {
   host: { type: 'string', multiple: true },
   can: { type: 'string', multiple: true },
+  'trust-ignores': { type: 'boolean' },
   min: { type: 'string' },
   'fail-on': { type: 'string' },
   json: { type: 'boolean' },
@@ -105,8 +108,16 @@ function hosts(v: Values): Host[] {
   return out;
 }
 
+/**
+ * Suppressions inside the scanned content are written by whoever wrote that content — a
+ * malicious skill would simply ignore itself, and `cd downloaded-skill && skill-guard scan .`
+ * is exactly how people check one. So inline comments and `.skill-guard.json` files in the
+ * scanned folder or the current directory count only with `--trust-ignores` (your own
+ * repository in CI). `--config <file>` and ~/.config/skill-guard/config.json always count.
+ */
 function loadSuppressions(v: Values, targets: string[]): Suppression[] {
-  const candidates = v.config ? [resolve(v.config)] : [...targets.map((t) => join(resolve(t), '.skill-guard.json')), join(process.cwd(), '.skill-guard.json'), join(home(), '.config', 'skill-guard', 'config.json')];
+  const local = v['trust-ignores'] ? [...targets.map((t) => join(resolve(t), '.skill-guard.json')), join(process.cwd(), '.skill-guard.json')] : [];
+  const candidates = v.config ? [resolve(v.config)] : [...local, join(home(), '.config', 'skill-guard', 'config.json')];
   for (const file of candidates) {
     if (!exists(file)) {
       if (v.config) throw new UsageError(`Config file not found: ${file}`);
@@ -142,13 +153,15 @@ function discover(v: Values, targets: string[]): Item[] {
 async function load(v: Values, targets: string[]): Promise<Item[]> {
   const items = discover(v, targets);
   await prefetch(items.flatMap((i) => i.files));
+  // A capped listing means some files were not looked at: never silent.
+  for (const root of takeTruncatedWalks()) console.error(c.yellow(`warning: stopped listing files under ${tildify(root)} at the file limit; some files there were not scanned.`));
   return items;
 }
 
 async function cmdScan(v: Values, targets: string[]): Promise<number> {
   const t0 = performance.now();
   const want = capabilityFilter(v);
-  const full = scanItems(await load(v, targets), { suppressions: loadSuppressions(v, targets) });
+  const full = scanItems(await load(v, targets), { suppressions: loadSuppressions(v, targets), inlineIgnores: !!v['trust-ignores'] });
   const result = restrict(full, withCapabilities(full, want));
   const items = result.items;
   const elapsed = performance.now() - t0;
@@ -211,7 +224,7 @@ function restrict<T extends ScanResult>(result: T, keep: Set<string> | undefined
 
 async function cmdList(v: Values, targets: string[]): Promise<number> {
   const want = capabilityFilter(v);
-  const result = scanItems(await load(v, targets), { suppressions: loadSuppressions(v, targets) });
+  const result = scanItems(await load(v, targets), { suppressions: loadSuppressions(v, targets), inlineIgnores: !!v['trust-ignores'] });
   const keep = withCapabilities(result, want);
   if (v.json) process.stdout.write(toJson(restrict(result, keep)) + '\n');
   else console.log(renderInventory(result, keep));
@@ -242,7 +255,7 @@ async function cmdDiff(v: Values, targets: string[]): Promise<number> {
   const touched = new Set(changes.filter((ch) => ch.status !== 'removed').map((ch) => ch.id));
   const result = scanItems(
     items.filter((i) => touched.has(i.id)),
-    { suppressions: loadSuppressions(v, targets) },
+    { suppressions: loadSuppressions(v, targets), inlineIgnores: !!v['trust-ignores'] },
   );
   annotateCapabilities(changes, lock, result.capabilities);
   if (v.json) {

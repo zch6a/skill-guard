@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync, type Dirent, type Stats } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, statSync, type Dirent, type Stats } from 'node:fs';
 import { readFile as readFileAsync, stat as statAsync } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 export function home(): string {
   return process.env.SKILL_GUARD_HOME || homedir();
@@ -80,28 +80,91 @@ const SKIP_IN_REPO = new Set(['dist', 'build', 'out', '.next', '.cache', 'target
 /** Under these, a folder name is an item name (a skill called "build"), never build output. */
 const ITEM_PARENTS = new Set(['skills', 'commands', 'agents', 'plugins', 'skill', 'command', 'agent', 'plugin']);
 
+export interface WalkOptions {
+  maxDepth?: number;
+  /** Cap on *kept* files (after `filter`), so a folder of 400 images cannot push SKILL.md out. */
+  maxFiles?: number;
+  /** `item`: everything inside one skill/plugin except dependencies and VCS data. `repo`: also skips build output. */
+  mode?: 'item' | 'repo';
+  filter?: (path: string) => boolean;
+  /** Called for a symbolic link that points outside `root` (not followed: it could pull in ~/.ssh). */
+  onOutsideLink?: (link: string, target: string) => void;
+}
+
+/** Walks that hit their file cap during this command (reported, never silent). */
+const truncatedWalks = new Set<string>();
+export function takeTruncatedWalks(): string[] {
+  const out = [...truncatedWalks];
+  truncatedWalks.clear();
+  return out;
+}
+
 /**
- * All files under `root` (depth-limited). `item`: everything inside one skill/plugin except
- * dependencies and VCS data. `repo`: also skips build output, except where the folder name
- * is an item name — otherwise a skill named "build" would be invisible to a repository scan.
+ * Files under `root`, depth-limited. In `repo` mode build output is skipped except where the
+ * folder name is an item name — otherwise a skill named "build" would be invisible. Symbolic
+ * links are followed only while they stay inside `root`.
  */
-export function walkFiles(root: string, maxDepth = 6, maxFiles = 5000, mode: 'item' | 'repo' = 'item'): string[] {
+export function walkFiles(root: string, maxDepthOrOpts: number | WalkOptions = 6, maxFiles = 5000, mode: 'item' | 'repo' = 'item'): string[] {
+  const o: WalkOptions = typeof maxDepthOrOpts === 'number' ? { maxDepth: maxDepthOrOpts, maxFiles, mode } : maxDepthOrOpts;
+  const maxDepth = o.maxDepth ?? 6;
+  const cap = o.maxFiles ?? 5000;
   const out: string[] = [];
+  let rootReal = '';
+  try {
+    rootReal = realpathSync(root);
+  } catch {
+    return out;
+  }
+  const inside = (p: string) => {
+    const rel = relative(rootReal, p);
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  };
   const visit = (dir: string, depth: number) => {
     const list = entries(dir);
     if (!list) return;
-    const parent = dir.slice(Math.max(dir.lastIndexOf('/'), dir.lastIndexOf('\\')) + 1).toLowerCase();
+    const parent = baseName(dir).toLowerCase();
     for (const e of list) {
-      if (out.length >= maxFiles) return;
+      if (out.length >= cap) {
+        truncatedWalks.add(root);
+        return;
+      }
       const p = join(dir, e.name);
-      if (e.isDirectory()) {
-        const skip = SKIP_ALWAYS.has(e.name) || (mode === 'repo' && SKIP_IN_REPO.has(e.name) && !ITEM_PARENTS.has(parent));
+      let isDirEntry = e.isDirectory();
+      let isFileEntry = e.isFile();
+      if (e.isSymbolicLink()) {
+        let target = '';
+        try {
+          target = realpathSync(p);
+        } catch {
+          continue; // dangling
+        }
+        if (!inside(target)) {
+          o.onOutsideLink?.(p, target);
+          continue;
+        }
+        const st = stat(target);
+        // A linked folder inside the root is walked through its real path already (Codex keeps a
+        // `latest` junction next to the version it points at); following it would scan it twice.
+        if (st?.isDirectory()) continue;
+        // A linked file inside the root may point into a skipped folder (node_modules/): keep its target.
+        if (st?.isFile() && (!o.filter || o.filter(target))) out.push(target);
+        continue;
+      }
+      if (isDirEntry) {
+        const skip = SKIP_ALWAYS.has(e.name) || (o.mode === 'repo' && SKIP_IN_REPO.has(e.name) && !ITEM_PARENTS.has(parent));
         if (depth < maxDepth && !skip) visit(p, depth + 1);
-      } else if (e.isFile()) out.push(p);
+      } else if (isFileEntry && (!o.filter || o.filter(p))) out.push(p);
     }
   };
   visit(root, 0);
-  return out.sort();
+  return [...new Set(out)].sort();
+}
+
+/** An extensionless file that starts with `#!` is a script. */
+export function hasShebang(path: string): boolean {
+  if (/\.[A-Za-z0-9]{1,6}$/.test(baseName(path))) return false;
+  const r = readText(path);
+  return 'text' in r && r.text.startsWith('#!');
 }
 
 /** Text extensions we scan. Binary assets (fonts, images) are not instructions or code. */
@@ -109,8 +172,13 @@ const TEXT_EXT = /\.(md|mdx|markdown|txt|json|jsonc|ya?ml|toml|ini|cfg|py|pyw|js
 const CODE_EXT = /\.(py|pyw|js|mjs|cjs|ts|mts|cts|jsx|tsx|sh|bash|zsh|fish|ps1|psm1|bat|cmd|rb|pl|php|go|rs|lua|r|swift|kt|java|cs)$/i;
 const NAMED_TEXT = /^(Makefile|Dockerfile|Justfile|\.?env(\..+)?|LICENSE|README)$/i;
 
+/** The last path segment, whatever the separator (a Windows path on Linux, a POSIX path on Windows). */
+export function baseName(path: string): string {
+  return path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
+}
+
 export function isTextFile(path: string): boolean {
-  const name = path.slice(path.lastIndexOf(sep) + 1).slice(path.lastIndexOf('/') + 1);
+  const name = baseName(path);
   return TEXT_EXT.test(name) || NAMED_TEXT.test(name);
 }
 
@@ -140,10 +208,34 @@ function readTextUncached(path: string): { text: string } | { skip: string } {
   try {
     const buf = readFileSync(path);
     fsCache?.digests.set(path, digest(buf));
-    return decodeText(buf);
+    return decodeText(buf, path);
   } catch (e) {
     return { skip: (e as NodeJS.ErrnoException).code ?? 'unreadable' };
   }
+}
+
+/**
+ * For a text/code file over MAX_FILE_BYTES: its first and last megabyte, with the line each starts
+ * on, so a payload appended after megabytes of padding is still seen. Files over 64 MB: nothing.
+ */
+export function readEnds(path: string): { text: string; line: number }[] {
+  if (!isTextFile(path) && !isCodeFile(path)) return [];
+  let buf: Buffer;
+  try {
+    if ((stat(path)?.size ?? 0) > 64 * 1024 * 1024) return [];
+    buf = readFileSync(path);
+  } catch {
+    return [];
+  }
+  const part = 1024 * 1024;
+  const head = buf.subarray(0, part).toString('utf8');
+  const tailStart = Math.max(part, buf.length - part);
+  let line = 1;
+  for (let i = 0; i < tailStart; i++) if (buf[i] === 10) line++;
+  return [
+    { text: head, line: 1 },
+    { text: buf.subarray(tailStart).toString('utf8'), line },
+  ];
 }
 
 /** Content hash used by lock files (sha256, first 32 hex chars). Changing it would invalidate every lock. */
@@ -164,9 +256,12 @@ export function fileDigest(path: string): string {
   }
 }
 
-function decodeText(buf: Buffer): { text: string } | { skip: string } {
-  // NUL bytes in the first 8 KB: treat as binary.
-  if (buf.subarray(0, 8192).includes(0)) return { skip: 'binary' };
+function decodeText(buf: Buffer, path: string): { text: string } | { skip: string } {
+  // UTF-16 with a BOM (PowerShell scripts saved by Windows tools): decode, do not call it binary.
+  if (buf[0] === 0xff && buf[1] === 0xfe) return { text: buf.subarray(2).toString('utf16le') };
+  if (buf[0] === 0xfe && buf[1] === 0xff) return { text: Buffer.from(buf.subarray(2)).swap16().toString('utf16le') };
+  // NUL bytes mean binary — unless the extension says text or code, where a planted NUL must not hide the file.
+  if (buf.subarray(0, 8192).includes(0) && !isTextFile(path)) return { skip: 'binary' };
   let text = buf.toString('utf8');
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   return { text };
@@ -203,7 +298,7 @@ export async function prefetch(paths: string[], concurrency = 16): Promise<void>
         else {
           const buf = await readFileAsync(p);
           cache.digests.set(p, digest(buf));
-          r = decodeText(buf);
+          r = decodeText(buf, p);
         }
       } catch (e) {
         r = { skip: (e as NodeJS.ErrnoException).code ?? 'unreadable' };
@@ -274,7 +369,9 @@ export function lineAt(text: string, index: number, max = 160): string {
 }
 
 /** Replace the home directory with `~` for display. */
-export function tildify(p: string): string {
+export function tildify(raw: string): string {
+  // File names are untrusted too (a name can contain an escape sequence on Linux).
+  const p = visible(raw);
   const h = home();
   if (!p || !h) return p;
   const a = process.platform === 'win32' ? p.toLowerCase() : p;
@@ -284,9 +381,17 @@ export function tildify(p: string): string {
   return p;
 }
 
-/** Mask anything that looks like a credential before it is printed. */
+/**
+ * Control characters from scanned files, made visible (\x1b, \x07, …). Raw, they reach the
+ * terminal — an ESC sequence in a skill could erase or rewrite lines of the report about it.
+ */
+export function visible(text: string): string {
+  return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029]/g, (ch) => '\\x' + ch.charCodeAt(0).toString(16).padStart(2, '0'));
+}
+
+/** Mask anything that looks like a credential before it is printed (and neutralise control characters). */
 export function maskSecrets(text: string): string {
-  return text
+  return visible(text)
     .replace(/\b(sk-(?:ant-|proj-)?[A-Za-z0-9_-]{6})[A-Za-z0-9_-]{10,}/g, '$1…')
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{4})[A-Za-z0-9]{20,}/g, '$1…')
     .replace(/\b(github_pat_[A-Za-z0-9]{4})[A-Za-z0-9_]{20,}/g, '$1…')

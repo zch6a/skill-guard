@@ -1,7 +1,7 @@
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseFrontmatter, parseJsonc, parseToml } from './parse.ts';
 import type { Hook, Host, Item, ItemKind, McpServer } from './types.ts';
-import { exists, home, isCodeFile, isDir, isObject, isTextFile, listDir, obj, readJson, readText, str, stringRecord, strings, walkFiles, withFsCache } from './util.ts';
+import { exists, hasShebang, home, visible, isCodeFile, isDir, isObject, isTextFile, listDir, obj, readJson, readText, str, stringRecord, strings, walkFiles, withFsCache } from './util.ts';
 
 /**
  * Discovery: find every skill, plugin, hook, MCP server and always-loaded
@@ -22,7 +22,8 @@ class Collector {
     const base = item.id ?? `${item.host}:${item.kind}:${item.name}`;
     const n = (this.ids.get(base) ?? 0) + 1;
     this.ids.set(base, n);
-    const full: Item = { ...item, id: n === 1 ? base : `${base}#${n}` };
+    // Names and descriptions come from the scanned files: neutralise control characters once, here.
+    const full: Item = { ...item, id: visible(n === 1 ? base : `${base}#${n}`), name: visible(item.name), ...(item.description ? { description: visible(item.description) } : {}) };
     this.items.push(full);
     return full;
   }
@@ -30,8 +31,11 @@ class Collector {
 
 // ------------------------------------------------------------------ skills
 
-function skillFiles(dir: string): string[] {
-  return walkFiles(dir, 5, 400).filter(isTextFile);
+/** Text files in a skill, scripts without an extension, and links that leave the folder. */
+function skillFiles(dir: string): { files: string[]; outsideLinks: string[] } {
+  const outsideLinks: string[] = [];
+  const files = walkFiles(dir, { maxDepth: 5, maxFiles: 400, filter: (f) => isTextFile(f) || hasShebang(f), onOutsideLink: (l) => outsideLinks.push(l) });
+  return { files, outsideLinks };
 }
 
 /** A folder containing SKILL.md (Agent Skills format: Claude Code, Codex, Cursor, ~/.agents, …). */
@@ -41,13 +45,17 @@ function addSkill(c: Collector, dir: string, host: Host, parent?: Item): void {
   const r = readText(skillMd);
   const fm = 'text' in r ? parseFrontmatter(r.text).data : {};
   const name = str(fm.name) || basename(dir);
+  const { files, outsideLinks } = skillFiles(dir);
+  // Scripts SKILL.md tells the agent to run, even where the walk does not go (node_modules/, .venv/).
+  const mentioned = scriptsMentioned(skillMd, dir);
   c.add({
     id: `${host}:skill:${parent ? parent.name + '/' : ''}${name}`,
     kind: 'skill',
     host,
     name,
     path: dir,
-    files: skillFiles(dir),
+    files: [...new Set([...files, ...mentioned])],
+    ...(outsideLinks.length ? { outsideLinks } : {}),
     description: str(fm.description) || undefined,
     parent: parent?.id,
     meta: fm,
@@ -105,8 +113,10 @@ function addMcpServers(c: Collector, servers: unknown, host: Host, configPath: s
   for (const [name, def] of Object.entries(obj(servers))) {
     if (!isObject(def)) continue;
     const mcp = normalizeMcp(def);
-    // A local server's own source is where tool descriptions (and tool poisoning) live.
-    const files = mcp.command ? referencedFiles([mcp.command, ...mcp.args], dirname(configPath), parent?.path) : [];
+    // A local server's own source is where tool descriptions (and tool poisoning) live — including
+    // the modules it imports (tools are often defined in a separate file).
+    const entries = mcp.command ? referencedFiles([mcp.command, ...mcp.args], dirname(configPath), parent?.path) : [];
+    const files = [...new Set(entries.flatMap((e) => localImports(e)))];
     c.add({
       id: `${host}:mcp-server:${parent ? parent.name + '/' : ''}${name}${project ? `@${project.replace(/\\/g, '/')}` : ''}`,
       kind: 'mcp-server',
@@ -137,19 +147,88 @@ function addMcpJson(c: Collector, path: string, host: Host, parent?: Item): void
  * Script files a hook command or MCP server points at, so their contents get scanned too.
  * A string is split like a shell would; an array (MCP `command` + `args`) is used token by token.
  */
+const JS_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"](\.{1,2}\/[^'"\n]{1,200})['"]/gm;
+const PY_IMPORT = /^\s*from\s+(\.*)([\w.]{0,100})\s+import\b|^\s*import\s+([\w.]{1,100})/gm;
+
+/**
+ * `entry` plus the local modules it imports, transitively (relative JS/TS imports, Python
+ * relative imports and sibling modules). Bounded, and never outside the entry's folder tree.
+ */
+function localImports(entry: string, limit = 50): string[] {
+  const root = dirname(entry);
+  const seen = new Set<string>([entry]);
+  const queue = [entry];
+  const add = (p: string) => {
+    const r = relative(root, p);
+    if (r.startsWith('..') || isAbsolute(r) || seen.has(p) || seen.size >= limit || !exists(p) || isDir(p)) return;
+    seen.add(p);
+    queue.push(p);
+  };
+  while (queue.length) {
+    const f = queue.shift() as string;
+    const r = readText(f);
+    if (!('text' in r)) continue;
+    const dir = dirname(f);
+    if (/\.(py|pyw)$/i.test(f)) {
+      for (const m of r.text.matchAll(PY_IMPORT)) {
+        const dots = m[1] ?? '';
+        const mod = (m[2] || m[3] || '').replace(/\./g, '/');
+        if (!mod) continue;
+        const base = dots.length > 1 ? resolve(dir, '../'.repeat(dots.length - 1)) : dir;
+        for (const cand of [join(base, `${mod}.py`), join(base, mod, '__init__.py')]) add(cand);
+      }
+    } else {
+      for (const m of r.text.matchAll(JS_IMPORT)) {
+        const spec = resolve(dir, m[1] as string);
+        for (const cand of [spec, ...['.js', '.mjs', '.cjs', '.ts', '.mts', '.tsx', '.jsx'].map((e) => spec + e), ...['index.js', 'index.ts', 'index.mjs'].map((i) => join(spec, i)), spec.replace(/\.js$/, '.ts')]) add(cand);
+      }
+    }
+  }
+  return [...seen];
+}
+
+/**
+ * Split a command line like a shell does for words: quotes group and are removed, and a quoted
+ * part joins whatever touches it — `"$CLAUDE_PROJECT_DIR"/.claude/hooks/x.sh` is one word.
+ */
+export function shellWords(s: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  let has = false;
+  for (const ch of s) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      has = true;
+    } else if (/\s/.test(ch)) {
+      if (has || cur) out.push(cur);
+      cur = '';
+      has = false;
+    } else cur += ch;
+  }
+  if (has || cur) out.push(cur);
+  return out;
+}
+
+const SCRIPT_EXT = /\.(sh|bash|zsh|fish|py|pyw|js|mjs|cjs|ts|mts|cts|ps1|psm1|cmd|bat|rb|pl|php|lua)$/i;
+
 function referencedFiles(command: string | string[], base: string, pluginRoot?: string): string[] {
   const expand = (s: string) =>
     s
       .replace(/\$\{?CLAUDE_PLUGIN_ROOT\}?|\$\{?PLUGIN_ROOT\}?|%CLAUDE_PLUGIN_ROOT%/g, pluginRoot ?? base)
       .replace(/\$\{?CLAUDE_PROJECT_DIR\}?|%CLAUDE_PROJECT_DIR%/g, base)
       .replace(/^~(?=[\\/])/, home());
-  const tokens = Array.isArray(command) ? command.map(expand) : [...expand(command).matchAll(/(?:"([^"]+)"|'([^']+)'|(\S+))/g)].map((m) => m[1] ?? m[2] ?? m[3] ?? '');
+  const tokens = Array.isArray(command) ? command.map(expand) : shellWords(expand(command));
   const out: string[] = [];
   for (const tok of tokens) {
-    if (!/\.(sh|bash|py|js|mjs|cjs|ts|mts|ps1|cmd|bat|rb)$/i.test(tok)) continue;
+    if (!tok || tok.startsWith('-')) continue;
     // resolve() normalises separators so the path matches what a directory walk returns
     const p = isAbsolute(tok) ? resolve(tok) : resolve(base, tok);
-    if (exists(p)) out.push(p);
+    // A script by extension, or an extensionless file with a shebang (`./bin/setup`).
+    if ((SCRIPT_EXT.test(tok) && exists(p) && !isDir(p)) || (/[\\/]/.test(tok) && exists(p) && !isDir(p) && hasShebang(p))) out.push(p);
   }
   return [...new Set(out)];
 }
@@ -165,6 +244,7 @@ function addHooks(c: Collector, hooks: unknown, host: Host, configPath: string, 
         const hook: Hook = { event, type: str(hd.type) || 'command' };
         if (str(group.matcher)) hook.matcher = str(group.matcher);
         if (str(hd.command)) hook.command = str(hd.command);
+        if (str(hd.prompt)) hook.prompt = str(hd.prompt);
         if (!hook.command && hook.type === 'command') continue;
         const label = hook.command ? hook.command.replace(/\s+/g, ' ').slice(0, 48) : hook.type;
         c.add({
@@ -183,13 +263,36 @@ function addHooks(c: Collector, hooks: unknown, host: Host, configPath: string, 
   }
 }
 
+/** Settings keys whose value is a shell command the agent runs by itself. */
+const SETTINGS_COMMANDS = ['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport', 'otelHeadersHelper'];
+
+/**
+ * Claude Code settings.json: hooks, plus everything else in it that runs code or changes what
+ * the agent may do — status-line and credential-helper commands, permission rules, env.
+ */
 function addSettingsHooks(c: Collector, path: string, host: Host, base: string): void {
   if (!exists(path)) return;
-  const j = obj(readJson(path));
+  const r = readText(path);
+  const j = obj('text' in r ? parseJsonc(r.text) : undefined);
   addHooks(c, j.hooks, host, path, base);
+  // Commands that run without being asked: model them as hooks so their scripts are scanned too.
+  const commands: [string, string][] = [];
+  const status = obj(j.statusLine);
+  if (str(status.command)) commands.push(['statusLine', str(status.command)]);
+  for (const k of SETTINGS_COMMANDS) if (str(j[k])) commands.push([k, str(j[k])]);
+  for (const [event, command] of commands)
+    c.add({ id: `${host}:hook:${event}`, kind: 'hook', host, name: `${event}: ${command.replace(/\s+/g, ' ').slice(0, 48)}`, path, files: referencedFiles(command, base), hook: { event, type: 'command', command }, meta: {} });
+  // The settings themselves (permissions, env, MCP auto-approval) are checked structurally.
+  if (j.permissions !== undefined || j.env !== undefined || j.enableAllProjectMcpServers !== undefined || j.defaultMode !== undefined)
+    c.add({ id: `${host}:settings:${relative(base, path).replace(/\\/g, '/') || basename(path)}`, kind: 'settings', host, name: basename(path), path, files: [], meta: j });
 }
 
 // ------------------------------------------------------------------ plugins
+
+/** `"commands": "./custom"` or `["./a.md", "./more"]` in a plugin manifest, resolved against the plugin root. */
+function manifestPaths(v: unknown, root: string): string[] {
+  return strings(Array.isArray(v) ? v : [v]).map((p) => resolve(root, p));
+}
 
 /** A Claude Code (`.claude-plugin/plugin.json`) or Codex (`.codex-plugin/plugin.json`) plugin and everything inside it. */
 function addPlugin(c: Collector, root: string, host: Host, manifestPath: string): void {
@@ -202,20 +305,26 @@ function addPlugin(c: Collector, root: string, host: Host, manifestPath: string)
     name,
     path: root,
     // The plugin's own files: manifest plus top-level scripts (skills, commands etc. are separate items).
-    files: [manifestPath, ...walkFiles(root, 2, 200).filter((f) => isCodeFile(f) && !/[\\/](skills|commands|agents)[\\/]/.test(f))],
+    files: [manifestPath, ...walkFiles(root, { maxDepth: 2, maxFiles: 200, filter: (f) => (isCodeFile(f) || hasShebang(f)) && !/[\\/](skills|commands|agents)[\\/]/.test(f) })],
     description: str(manifest.description) || undefined,
     meta: manifest,
   });
   if (!plugin) return;
   addSkillsUnder(c, join(root, 'skills'), host, plugin);
+  for (const p of manifestPaths(manifest.skills, root)) addSkillsUnder(c, p, host, plugin);
   for (const kind of ['commands', 'agents'] as const) {
-    const dir = join(root, kind);
-    for (const f of walkFiles(dir, 3, 300).filter((p) => /\.md$/i.test(p))) {
+    // The default folder plus any custom paths (files or folders) the manifest declares.
+    const mds = new Set<string>();
+    for (const dir of [join(root, kind), ...manifestPaths(manifest[kind], root)]) {
+      if (isDir(dir)) for (const f of walkFiles(dir, { maxDepth: 3, maxFiles: 300, filter: (p) => /\.md$/i.test(p) })) mds.add(f);
+      else if (/\.md$/i.test(dir) && exists(dir)) mds.add(dir);
+    }
+    for (const f of mds) {
       const r = readText(f);
       const fm = 'text' in r ? parseFrontmatter(r.text).data : {};
       const itemKind: ItemKind = kind === 'commands' ? 'command' : 'subagent';
       const n = str(fm.name) || basename(f, '.md');
-      c.add({ id: `${host}:${itemKind}:${name}/${n}`, kind: itemKind, host, name: n, path: f, files: [f], description: str(fm.description) || undefined, parent: plugin.id, meta: fm });
+      c.add({ id: `${host}:${itemKind}:${name}/${n}`, kind: itemKind, host, name: n, path: f, files: [f, ...scriptsMentioned(f, root)], description: str(fm.description) || undefined, parent: plugin.id, meta: fm });
     }
   }
   // hooks: hooks/hooks.json, or inline / referenced from the manifest
@@ -257,7 +366,7 @@ function addDshPlugins(c: Collector, dshHome: string): void {
         host: 'deepseek-harness',
         name: dep,
         path: dir,
-        files: [join(dir, 'package.json'), ...walkFiles(dir, 4, 300).filter((f) => isCodeFile(f) && !/\.d\.ts$/.test(f) && !/\.map$/.test(f))],
+        files: [join(dir, 'package.json'), ...walkFiles(dir, { maxDepth: 4, maxFiles: 300, filter: (f) => isCodeFile(f) && !/\.d\.ts$/.test(f) && !/\.map$/.test(f) })],
         description: str(pj.description) || undefined,
         meta: { ...pj, profile },
       });
@@ -392,6 +501,12 @@ export function discoverPath(target: string): Item[] {
   return withFsCache(() => discoverPathUncached(target));
 }
 
+/** Instruction files agents load into every conversation in a repository. */
+const CONTEXT_FILE = /^(CLAUDE|CLAUDE\.local|AGENTS|GEMINI)\.md$|^\.(cursorrules|windsurfrules|clinerules)$/i;
+const CONTEXT_PATH = /(^|\/)\.(cursor|windsurf)\/rules\/.+\.mdc?$|(^|\/)\.clinerules\/.+\.md$|(^|\/)\.github\/(copilot-instructions\.md|instructions\/.+\.instructions\.md)$/;
+/** File names that can be, or define, an item in a repository. */
+const DISCOVERY_NAME = /^(skill\.md|plugin\.json|\.mcp\.json|mcp\.json|claude_desktop_config\.json|settings(\.local)?\.json|config\.toml|opencode\.jsonc?|(CLAUDE|CLAUDE\.local|AGENTS|GEMINI)\.md|\.(cursorrules|windsurfrules|clinerules))$|\.(md|mdc)$/i;
+
 function discoverPathUncached(target: string): Item[] {
   const root = resolve(target);
   const c = new Collector();
@@ -400,7 +515,8 @@ function discoverPathUncached(target: string): Item[] {
     if (exists(root)) c.add({ kind: /\.md$/i.test(root) ? 'context' : 'plugin', host: 'repo', name: basename(root), path: root, files: [root], meta: {} });
     return c.items;
   }
-  const files = walkFiles(root, 8, 20000, 'repo');
+  // Only names that can be (or define) an item count toward the cap, so padding with other files cannot push them out.
+  const files = walkFiles(root, { maxDepth: 8, maxFiles: 20000, mode: 'repo', filter: (f) => DISCOVERY_NAME.test(basename(f)) });
   const rel = (f: string) => relative(root, f).replace(/\\/g, '/');
 
   // plugins first, so their skills/hooks/MCP servers are attributed to them
@@ -413,7 +529,13 @@ function discoverPathUncached(target: string): Item[] {
       addPlugin(c, pr, 'repo', f);
     }
   }
-  const inPlugin = (f: string) => [...pluginRoots].some((pr) => f.startsWith(pr + '/') || f.startsWith(pr + '\\'));
+  // A plugin owns its manifest, skills, commands, agents, hooks and .mcp.json — not everything under its
+  // folder: a plugin.json at a repository's root must not hide that repository's CLAUDE.md or settings.
+  const PLUGIN_OWNED = /^(\.claude-plugin|\.codex-plugin|skills|commands|agents|hooks)(\/|$)|^\.mcp\.json$/;
+  const inPlugin = (f: string) => [...pluginRoots].some((pr) => {
+    const r = relative(pr, f).replace(/\\/g, '/');
+    return !r.startsWith('..') && !isAbsolute(r) && PLUGIN_OWNED.test(r);
+  });
 
   for (const f of files) {
     if (inPlugin(f)) continue;
@@ -428,11 +550,14 @@ function discoverPathUncached(target: string): Item[] {
     } else if (/^opencode\.jsonc?$/.test(name)) {
       const t = readText(f);
       if ('text' in t) addMcpServers(c, obj(parseJsonc(t.text)).mcp, 'repo', f);
-    } else if (/^(CLAUDE|AGENTS|GEMINI)\.md$/i.test(name) || name === '.cursorrules' || /(^|\/)\.cursor\/rules\/.+\.mdc?$/.test(r) || /(^|\/)\.github\/copilot-instructions\.md$/.test(r)) addContext(c, f, 'repo', root);
+    } else if (CONTEXT_FILE.test(name) || CONTEXT_PATH.test(r)) addContext(c, f, 'repo', root);
     else if (/(^|\/)\.claude\/(commands|agents)\/.+\.md$/.test(r)) {
       const kind: ItemKind = r.includes('/commands/') ? 'command' : 'subagent';
       c.add({ kind, host: 'repo', name: basename(f, '.md'), path: f, files: [f, ...scriptsMentioned(f, root)], meta: {} });
     }
   }
+  // Test-path detection starts at the scanned folder: a repository's tests/fixtures are tests, but the
+  // folder the repository happens to be cloned into (~/test/…) is not.
+  for (const i of c.items) i.scanRoot = root;
   return c.items;
 }

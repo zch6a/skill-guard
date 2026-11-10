@@ -1,6 +1,6 @@
 {
   "name": "skill-guard",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "description": "Find prompt injection, data exfiltration and hidden instructions in the Skills, plugins, hooks and MCP servers your AI agents run. Local, deterministic, zero dependencies.",
   "keywords": [
     "agent-skills",

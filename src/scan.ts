@@ -1,11 +1,11 @@
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { parseFrontmatter } from './parse.ts';
-import { RULE_BY_ID, isBinaryAsset, scanHook, scanMcp, scanPackageJson, scanSkillMeta, scanUnit } from './rules.ts';
+import { RULE_BY_ID, isBinaryAsset, scanHook, scanMcp, scanOutsideLinks, scanPackageJson, scanSettings, scanSkillMeta, scanUnit } from './rules.ts';
 import { capabilitiesOf } from './capabilities.ts';
 import { toolDescriptions } from './tooldesc.ts';
 import type { Capability, Finding, Item, ScanResult, Severity, TextUnit, UnitKind } from './types.ts';
 import { SEVERITY_ORDER } from './types.ts';
-import { exists, isCodeFile, isObject, readJson, readText, walkFiles, withFsCache } from './util.ts';
+import { digest, exists, hasShebang, isCodeFile, isObject, readEnds, readJson, readText, walkFiles, withFsCache } from './util.ts';
 
 export interface Suppression {
   rule: string;
@@ -18,14 +18,20 @@ export interface Suppression {
 
 export interface ScanOptions {
   suppressions?: Suppression[];
+  /** Honour `skill-guard-ignore` comments inside scanned files. Off by default: the content is untrusted. */
+  inlineIgnores?: boolean;
 }
 
 const DOC_NAMES = /^(readme|license|licence|changelog|changes|history|contributing|code_of_conduct|security|notice|authors)(\.[a-z]+)?$/i;
 
-/** How a file inside an item should be read. */
-function unitKindFor(item: Item, file: string): UnitKind {
+/**
+ * How a file inside an item should be read. `named`: files the item's own instructions mention
+ * ("read README.md and follow it") — those are instructions whatever their name or extension.
+ */
+function unitKindFor(item: Item, file: string, named: Set<string>): UnitKind {
   const name = basename(file);
-  if (isCodeFile(file)) return 'code';
+  if (isCodeFile(file) || hasShebang(file)) return 'code';
+  if (named.has(name.toLowerCase()) && !/\.(json|jsonc|ya?ml|toml)$/i.test(name)) return 'instructions';
   if (DOC_NAMES.test(name)) return 'docs';
   if (/\.(md|mdx|markdown|txt|mdc)$/i.test(name) || name === '.cursorrules') {
     // Everything markdown in a skill, command, agent or context file is something the model may read and follow.
@@ -35,9 +41,24 @@ function unitKindFor(item: Item, file: string): UnitKind {
   return 'docs';
 }
 
+/** File names (lower case) that a skill's SKILL.md, or a command/agent file, mentions. */
+function namedFiles(item: Item): Set<string> {
+  const main = item.kind === 'skill' ? item.files.find((f) => /^skill\.md$/i.test(basename(f))) : item.kind === 'command' || item.kind === 'subagent' || item.kind === 'context' ? item.files[0] : undefined;
+  if (!main) return new Set();
+  const r = readText(main);
+  if (!('text' in r)) return new Set();
+  const text = r.text.toLowerCase();
+  return new Set(item.files.map((f) => basename(f).toLowerCase()).filter((n) => n !== basename(main).toLowerCase() && text.includes(n)));
+}
+
 function unitsFor(item: Item, skipped: ScanResult['skipped']): TextUnit[] {
   const units: TextUnit[] = [];
   if (item.kind === 'hook' && item.hook?.command) units.push({ item, kind: 'command', text: item.hook.command, file: item.path });
+  // A prompt hook's text is given to a model on every matching event.
+  if (item.kind === 'hook' && item.hook?.prompt) units.push({ item, kind: 'instructions', text: item.hook.prompt, file: item.path });
+  const named = namedFiles(item);
+  // An MCP server's own source: tool descriptions there are what the model reads, marker or not.
+  const serverSource = item.kind === 'mcp-server';
   if (item.kind === 'mcp-server' && item.mcp) {
     const cmd = [item.mcp.command ?? '', ...item.mcp.args].join(' ').trim();
     if (cmd) units.push({ item, kind: 'command', text: cmd, file: item.path });
@@ -46,9 +67,14 @@ function unitsFor(item: Item, skipped: ScanResult['skipped']): TextUnit[] {
     const r = readText(file);
     if (!('text' in r)) {
       skipped.push({ file, reason: r.skip });
+      // Padding a script past the size limit must not hide it: scan its ends (findings keep real line numbers).
+      if (r.skip.startsWith('larger')) {
+        const kind = item.kind === 'hook' ? 'code' : unitKindFor(item, file, named);
+        for (const part of readEnds(file)) units.push({ item, file, kind, text: part.text, lineOffset: part.line });
+      }
       continue;
     }
-    const kind = item.kind === 'hook' ? 'code' : unitKindFor(item, file);
+    const kind = item.kind === 'hook' ? 'code' : unitKindFor(item, file, named);
     if (kind === 'instructions' && /\.(md|mdx|markdown|mdc)$/i.test(file)) {
       // Frontmatter description is metadata (it decides when the item loads); the body is instructions.
       const fm = parseFrontmatter(r.text);
@@ -56,7 +82,7 @@ function unitsFor(item: Item, skipped: ScanResult['skipped']): TextUnit[] {
       units.push({ item, file, kind: 'instructions', text: fm.body, lineOffset: fm.bodyLine });
     } else units.push({ item, file, kind, text: r.text, lineOffset: 1 });
     // Tool descriptions in MCP server source are read by the model: scan them as instructions.
-    if (kind === 'code') for (const d of toolDescriptions(r.text)) units.push({ item, file, kind: 'instructions', text: d.text, lineOffset: d.line, origin: 'tool-description' });
+    if (kind === 'code') for (const d of toolDescriptions(r.text, serverSource)) units.push({ item, file, kind: 'instructions', text: d.text, lineOffset: d.line, origin: 'tool-description' });
   }
   return units;
 }
@@ -89,15 +115,18 @@ function structural(item: Item): Finding[] {
     const md = ['SKILL.md', 'skill.md', 'Skill.md'].map((n) => join(item.path, n)).find(exists) ?? join(item.path, 'SKILL.md');
     out.push(...scanSkillMeta(item, md));
   }
-  // package.json lifecycle scripts (DeepSeek Harness plugins, plugin roots, skills that ship node code)
+  // package.json lifecycle scripts (DeepSeek Harness plugins, plugin roots, skills that ship node code).
+  // Only the item's own folder: a parent's package.json belongs to something else.
   if (item.kind === 'dsh-plugin' || item.kind === 'plugin' || item.kind === 'skill') {
-    const pj = join(item.kind === 'plugin' && !exists(join(item.path, 'package.json')) ? dirname(item.path) : item.path, 'package.json');
+    const pj = join(item.path, 'package.json');
     const pkg = exists(pj) ? readJson(pj) : undefined;
     if (isObject(pkg)) out.push(...scanPackageJson(item, pj, pkg));
   }
+  if (item.kind === 'settings') out.push(...scanSettings(item));
+  if (item.outsideLinks?.length) out.push(...scanOutsideLinks(item));
   // compiled binaries bundled with a skill or plugin
   if ((item.kind === 'skill' || item.kind === 'plugin') && exists(item.path)) {
-    const bins = walkFiles(item.path, 5, 2000).filter(isBinaryAsset);
+    const bins = walkFiles(item.path, { maxDepth: 5, maxFiles: 2000, filter: isBinaryAsset });
     if (bins.length) {
       const r = RULE_BY_ID.get('SG802')!;
       out.push({
@@ -129,7 +158,10 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${re}$`, 'i');
 }
 
-/** `skill-guard-ignore SG203` on the same or previous line, or `skill-guard-ignore-file SG203` anywhere. */
+/**
+ * `skill-guard-ignore SG203` on the same or previous line, or `skill-guard-ignore-file SG203` anywhere.
+ * Rule IDs are required: a bare "skill-guard-ignore-file" would let one comment silence everything.
+ */
 function inlineSuppressed(f: Finding, texts: Map<string, string[]>): boolean {
   if (!f.file) return false;
   let lines = texts.get(f.file);
@@ -143,7 +175,7 @@ function inlineSuppressed(f: Finding, texts: Map<string, string[]>): boolean {
     const m = (fileWide ? /skill-guard-ignore-file\b([^\n]*)/ : /skill-guard-ignore(?!-file)\b([^\n]*)/).exec(line);
     if (!m) return false;
     const ids = (m[1] ?? '').match(/SG\d{3}/g);
-    return !ids || ids.includes(f.rule);
+    return !!ids && ids.includes(f.rule);
   };
   if (lines.some((l) => mentions(l, true))) return true;
   if (f.line && (mentions(lines[f.line - 1], false) || mentions(lines[f.line - 2], false))) return true;
@@ -173,10 +205,17 @@ function scanItemsUncached(items: Item[], opts: ScanOptions): ScanResult & { sup
   // run the rules once per file and kind, then attribute the findings to each item.
   const memo = new Map<string, Finding[]>();
   for (const item of items) {
+    const skippedBefore = skipped.length;
     const units = unitsFor(item, skipped);
     const own: Finding[] = [];
+    // Files too large to scan whole are reported, never silently passed over.
+    for (const s of skipped.slice(skippedBefore).filter((x) => x.reason.startsWith('larger'))) {
+      const partial = units.some((u) => u.file === s.file);
+      own.push({ rule: 'SG805', severity: 'low', title: RULE_BY_ID.get('SG805')!.title, message: partial ? 'Larger than 2 MB: only its first and last megabyte were scanned.' : 'Too large to scan (over 64 MB).', item: item.id, file: s.file });
+    }
     for (const unit of units) {
-      const key = unit.file && unit.kind !== 'command' ? `${unit.kind}|${unit.origin ?? ''}|${unit.lineOffset ?? 1}|${unit.file}` : undefined;
+      // The content is part of the key: two tool descriptions on one line must not share a result.
+      const key = unit.file && unit.kind !== 'command' ? `${unit.kind}|${unit.origin ?? ''}|${unit.lineOffset ?? 1}|${unit.file}|${digest(unit.text)}` : undefined;
       let found = key ? memo.get(key) : undefined;
       if (!found) {
         found = scanUnit(unit);
@@ -201,7 +240,7 @@ function scanItemsUncached(items: Item[], opts: ScanOptions): ScanResult & { sup
   let hidden = 0;
   const kept: Finding[] = [];
   for (const f of best.values()) {
-    if (inlineSuppressed(f, texts) || (opts.suppressions && suppressed(f, opts.suppressions))) hidden++;
+    if ((opts.inlineIgnores && inlineSuppressed(f, texts)) || (opts.suppressions && suppressed(f, opts.suppressions))) hidden++;
     else kept.push(f);
   }
   kept.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || a.item.localeCompare(b.item) || (a.line ?? 0) - (b.line ?? 0));

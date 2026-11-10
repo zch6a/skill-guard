@@ -40,11 +40,13 @@ const out = [
   '',
   '## Suppressing',
   '',
-  'Suppress a finding with a comment containing `skill-guard-ignore SG123` on the same line or the line above, `skill-guard-ignore-file SG123` anywhere in the file, or an entry in `.skill-guard.json`:',
+  'Suppress findings in a `.skill-guard.json` passed with `--config` (or in `~/.config/skill-guard/config.json`):',
   '',
   '```json',
   '{ "ignore": [{ "rule": "SG601", "item": "claude-code:mcp-server:*", "reason": "pinned via lockfile" }] }',
   '```',
+  '',
+  'Inline comments — `skill-guard-ignore SG123` on the same line or the line above, `skill-guard-ignore-file SG123` anywhere in the file (rule IDs are required) — and a `.skill-guard.json` inside the scanned folder count only with `--trust-ignores`: they are part of the content being scanned, and a malicious skill would simply ignore itself. Use the flag for your own repository in CI. The number of suppressed findings is always reported.',
   '',
 ];
 for (const [prefix, title] of groups) {

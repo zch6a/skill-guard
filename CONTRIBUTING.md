@@ -4,6 +4,10 @@ skill-guard is a scanner people will trust with security decisions, so two thing
 
 ## Setup
 
+Development runs the TypeScript sources directly, which needs type stripping on by default: **Node.js 22.18+ or 24** (on 22.15–22.17 add `--experimental-strip-types`). The published package is plain JavaScript and runs on 22.15+.
+
+Before changing anything users depend on — rule IDs, item IDs, options, JSON/SARIF shape, lock format — read [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
 ```bash
 npm install                 # dev dependencies only
 npm run dev -- scan ./path  # run from source (Node runs .ts directly)
@@ -29,6 +33,7 @@ src/
   rules/structure.ts hooks, package.json scripts, skill metadata, bundled binaries
   capabilities.ts    what an item can do (auto, code, net, write, shell, bin, creds)
   tooldesc.ts        MCP tool descriptions inside server source, scanned as instructions
+  rules/shell.ts     joins quote-split words and simple variables so assembled commands are seen
   unicode.ts         invisible-character detection and decoding
   lock.ts            pinning and diff
   report.ts          terminal, JSON, SARIF, Markdown

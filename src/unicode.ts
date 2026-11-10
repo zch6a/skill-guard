@@ -9,13 +9,17 @@
 export interface HiddenRun {
   index: number;
   length: number;
-  kind: 'tag' | 'zero-width' | 'bidi' | 'variation-selector';
+  kind: 'tag' | 'zero-width' | 'bidi' | 'variation-selector' | 'confusable';
   /** For Unicode Tag characters: the ASCII text they encode. */
   decoded?: string;
 }
 
 const isTag = (cp: number) => cp >= 0xe0000 && cp <= 0xe007f;
-const isZeroWidth = (cp: number) => cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0x2060 || cp === 0x2061 || cp === 0x2062 || cp === 0x2063 || cp === 0x2064 || cp === 0xfeff || cp === 0x180e;
+// Zero-width and other glyphless characters: ZW space/joiners, word joiner and invisible operators,
+// BOM, Mongolian vowel separator, soft hyphen, combining grapheme joiner, Hangul fillers.
+const isZeroWidth = (cp: number) =>
+  cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0x2060 || cp === 0x2061 || cp === 0x2062 || cp === 0x2063 || cp === 0x2064 || cp === 0xfeff || cp === 0x180e || cp === 0x00ad || cp === 0x034f || cp === 0x115f || cp === 0x1160 || cp === 0x3164 || cp === 0xffa0;
+const isAsciiLetter = (ch: string | undefined) => !!ch && /^[A-Za-z]$/.test(ch);
 const isBidi = (cp: number) => (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069) || cp === 0x200e || cp === 0x200f || cp === 0x061c;
 /** Variation selectors carry no visible glyph; long runs of them can encode bytes ("emoji smuggling"). */
 const isVariationSelector = (cp: number) => (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef);
@@ -68,15 +72,76 @@ export function findHidden(text: string): HiddenRun[] {
     const count = chars.length;
     let keep = false;
     if (run.kind === 'tag' || run.kind === 'bidi') keep = true;
-    else if (run.kind === 'zero-width') keep = count >= 2 || !(chars[0] === String.fromCharCode(0x200c) || chars[0] === String.fromCharCode(0x200d));
-    else keep = count >= 3;
+    else if (run.kind === 'zero-width') {
+      // ZWJ/ZWNJ and the soft hyphen have real uses (emoji, some scripts, hyphenation hints) - but never
+      // splitting an ASCII word: "Ig<ZWJ>nore" exists only to dodge pattern matching.
+      const lenient = chars[0] === String.fromCharCode(0x200c) || chars[0] === String.fromCharCode(0x200d) || chars[0] === String.fromCharCode(0x00ad);
+      const splitsWord = isAsciiLetter(text[run.index - 1]) && isAsciiLetter(text[run.index + run.length]);
+      keep = count >= 2 || !lenient || splitsWord;
+    } else keep = count >= 3;
     if (!keep) return;
     if (run.kind === 'tag' && tagText) run.decoded = tagText;
     runs.push(run);
   }
 }
 
-/** Make hidden characters visible for a report: `<U+200B>`, and decoded tag text as `[hidden: …]`. */
+// ---------------------------------------------------------------- look-alike letters
+
+/** Cyrillic and Greek letters that look like Latin ones, as [code point, Latin letter]. */
+const CONFUSABLE_PAIRS: [number, string][] = [
+  // Cyrillic lower: a e o p c y x s i j d h k m t b l n
+  [0x0430, 'a'], [0x0435, 'e'], [0x043e, 'o'], [0x0440, 'p'], [0x0441, 'c'], [0x0443, 'y'], [0x0445, 'x'], [0x0455, 's'], [0x0456, 'i'], [0x0458, 'j'], [0x0501, 'd'], [0x04bb, 'h'], [0x043a, 'k'], [0x043c, 'm'], [0x0442, 't'], [0x044c, 'b'], [0x04cf, 'l'], [0x043f, 'n'],
+  // Cyrillic upper
+  [0x0410, 'A'], [0x0412, 'B'], [0x0415, 'E'], [0x041a, 'K'], [0x041c, 'M'], [0x041d, 'H'], [0x041e, 'O'], [0x0420, 'P'], [0x0421, 'C'], [0x0422, 'T'], [0x0425, 'X'], [0x0406, 'I'], [0x0408, 'J'], [0x0405, 'S'], [0x04c0, 'I'],
+  // Greek
+  [0x03bf, 'o'], [0x03b1, 'a'], [0x03b5, 'e'], [0x03c1, 'p'], [0x03bd, 'v'], [0x03c4, 't'], [0x03ba, 'k'], [0x03b9, 'i'], [0x03c5, 'u'], [0x03c7, 'x'],
+  [0x0391, 'A'], [0x0392, 'B'], [0x0395, 'E'], [0x0396, 'Z'], [0x0397, 'H'], [0x0399, 'I'], [0x039a, 'K'], [0x039c, 'M'], [0x039d, 'N'], [0x039f, 'O'], [0x03a1, 'P'], [0x03a4, 'T'], [0x03a5, 'Y'], [0x03a7, 'X'],
+];
+const CONFUSABLE = new Map(CONFUSABLE_PAIRS.map(([cp, l]) => [String.fromCharCode(cp), l]));
+/** Fullwidth ASCII (U+FF01-FF5E) folds to ASCII. */
+const fold = (ch: string) => {
+  const cp = ch.charCodeAt(0);
+  if (cp >= 0xff01 && cp <= 0xff5e) return String.fromCharCode(cp - 0xfee0);
+  return CONFUSABLE.get(ch) ?? ch;
+};
+const isLatin = (ch: string) => /^[A-Za-z]$/.test(ch);
+
+/**
+ * The text as a pattern should see it: invisible characters removed, look-alike letters folded to
+ * Latin. Newlines are untouched, so line N of the skeleton is line N of the text. Returns the text
+ * itself when there is nothing to fold (the usual case).
+ */
+export function skeleton(text: string): string {
+  if (!/[\u00ad\u034f\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\u3164\ufeff\uffa0\u0370-\u03ff\u0400-\u052f\uff01-\uff5e]|[\udb40][\udc00-\udc7f]/.test(text)) return text;
+  let out = '';
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (kindOf(cp)) continue;
+    out += fold(ch);
+  }
+  return out;
+}
+
+/** Words that mix Latin letters with look-alike Cyrillic/Greek ones ("Ign\u043ere" with a Cyrillic \u043e). */
+export function mixedScriptWords(text: string): { index: number; length: number; reads: string }[] {
+  const out: { index: number; length: number; reads: string }[] = [];
+  // Almost no text contains a Cyrillic or Greek letter at all: one test skips the word-by-word pass.
+  if (!/[\u0370-\u03ff\u0400-\u052f]/.test(text)) return out;
+  for (const m of text.matchAll(/[\p{L}\u00ad\u200b-\u200d]{3,64}/gu)) {
+    const w = m[0];
+    let latin = false;
+    let fake = false;
+    for (const ch of w) {
+      if (isLatin(ch)) latin = true;
+      else if (CONFUSABLE.has(ch)) fake = true;
+    }
+    if (latin && fake) out.push({ index: m.index ?? 0, length: w.length, reads: [...w].map(fold).join('') });
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+/** Make hidden characters visible for a report: `<U+200B>`, and decoded tag text as `[hidden: \u2026]`. */
 export function reveal(text: string): string {
   let out = '';
   let tag = '';

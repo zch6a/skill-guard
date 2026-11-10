@@ -1,24 +1,60 @@
 import type { Finding, Severity, TextUnit } from '../types.ts';
 import { SEVERITY_ORDER } from '../types.ts';
-import { findHidden, reveal } from '../unicode.ts';
+import { findHidden, mixedScriptWords, reveal, skeleton } from '../unicode.ts';
 import { lineAt } from '../util.ts';
 import { RULE_BY_ID } from './catalog.ts';
-import { IMPERATIVE_NEAR, SHELL_FILE, contextual, eachMatch, emit, inFence, isTestPath, lower, type Ctx } from './context.ts';
+import { IMPERATIVE_NEAR, SHELL_FILE, contextual, eachMatch, emit, inFence, inTests, lower, type Ctx } from './context.ts';
 import { RE, findBlobs } from './patterns.ts';
 import { normalizeShell } from './shell.ts';
 
-/** Run every content rule over one unit of text. */
+/**
+ * Run every content rule over one unit of text — and, when it contains invisible characters or
+ * look-alike letters, over its skeleton too, so "Ig<ZWJ>nore" or a Cyrillic "о" cannot split a
+ * keyword out of the patterns. Lines are preserved, so skeleton findings point at the right line.
+ */
 export function scanUnit(unit: TextUnit): Finding[] {
+  const out = scanText(unit);
+  const sk = skeleton(unit.text);
+  if (sk !== unit.text) {
+    const seen = new Set(out.map((f) => `${f.rule}|${f.line ?? ''}`));
+    for (const f of scanText({ ...unit, text: sk }, true)) {
+      if (f.rule === 'SG103' || seen.has(`${f.rule}|${f.line ?? ''}`)) continue;
+      out.push({ ...f, message: `${f.message} (after removing hidden and look-alike characters)` });
+    }
+  }
+  return out;
+}
+
+/** Every `<!-- … -->` (an unclosed one runs to the end), in one linear pass. */
+function htmlComments(t: string, limit = 20): { index: number; body: string }[] {
+  const out: { index: number; body: string }[] = [];
+  for (let i = t.indexOf('<!--'); i >= 0 && out.length < limit; i = t.indexOf('<!--', i + 4)) {
+    const end = t.indexOf('-->', i + 4);
+    out.push({ index: i, body: t.slice(i + 4, end < 0 ? t.length : end) });
+    if (end < 0) break;
+    i = end;
+  }
+  return out;
+}
+
+function scanText(unit: TextUnit, derived = false): Finding[] {
   const ctx: Ctx = { unit, out: [] };
   const t = unit.text;
   const k = unit.kind;
   const prose = k === 'instructions' || k === 'metadata' || k === 'docs';
 
+  // SG103 look-alike letters inside Latin words (the skeleton pass then reads them as Latin)
+  if (!derived && (prose || k === 'code'))
+    for (const w of mixedScriptWords(t)) {
+      const sev = lower('medium', (k === 'docs' ? 1 : 0) + (inTests(unit) ? 2 : 0));
+      emit(ctx, 'SG103', w.index, sev, `Mixes look-alike Cyrillic/Greek letters into a Latin word (reads as "${w.reads}").`, reveal(lineAt(t, w.index, 200)));
+    }
+
   // SG103 invisible characters — everywhere
-  for (const run of findHidden(t).slice(0, 10)) {
+  for (const run of derived ? [] : findHidden(t).slice(0, 10)) {
     const base: Severity = run.kind === 'tag' ? 'critical' : run.kind === 'bidi' ? 'high' : 'medium';
     // Tag characters stay critical even in tests: they have no legitimate use and are trivial to copy elsewhere.
-    const sev = run.kind === 'tag' ? base : lower(base, (k === 'docs' ? 1 : 0) + (isTestPath(unit.file) ? 2 : 0));
+    const sev = run.kind === 'tag' ? base : lower(base, (k === 'docs' ? 1 : 0) + (inTests(unit) ? 2 : 0));
     const what =
       run.kind === 'tag'
         ? `${[...t.slice(run.index, run.index + run.length)].length} Unicode Tag characters${run.decoded ? ` spelling "${run.decoded.slice(0, 120)}"` : ''}`
@@ -41,24 +77,28 @@ export function scanUnit(unit: TextUnit): Finding[] {
       const sev = contextual('SG102', ctx, m.index, { docs: 2 }, m[0].length);
       if (sev) emit(ctx, 'SG102', m.index, sev, `Asks the model to keep something from the user: "${m[0].slice(0, 80)}".`);
     });
+  // SG104 HTML comments, found with indexOf so length is no limit (padding a comment past a regex bound was a bypass).
   if (k === 'instructions')
-    eachMatch(t, RE.htmlComment, (m) => {
-      const body = m[1] ?? '';
-      if (inFence(t, m.index)) return; // an HTML example, not a hidden note
-      if (RE.imperative.test(body) && !/skill-guard-ignore|prettier-ignore|markdownlint|toc|eslint/i.test(body)) {
-        const sev = contextual('SG104', ctx, m.index) ?? 'medium';
-        emit(ctx, 'SG104', m.index, sev, 'An HTML comment (invisible when rendered) contains instructions.', body.trim().replace(/\s+/g, ' ').slice(0, 160));
+    for (const { index, body } of htmlComments(t)) {
+      if (inFence(t, index)) continue; // an HTML example, not a hidden note
+      if (RE.imperative.test(body) && !/^\s*(skill-guard-ignore|prettier-ignore|markdownlint|toc|eslint)/i.test(body)) {
+        const sev = contextual('SG104', ctx, index) ?? 'medium';
+        emit(ctx, 'SG104', index, sev, 'An HTML comment (invisible when rendered) contains instructions.', body.trim().replace(/\s+/g, ' ').slice(0, 160));
       }
-    });
+    }
   // SG104 also: SVG/HTML text styled to be invisible. Anywhere (an .svg asset is "docs", but hidden text is never documentation).
   if (/font-size|opacity|display\s*:\s*none|visibility\s*:\s*hidden/i.test(t))
     eachMatch(t, RE.hiddenElement, (m) => {
-      const body = m[m.length - 1] ?? '';
+      // The element's text up to its closing tag, nested tags stripped: `<text …>Ig<b>nore</b> …</text>`.
+      const tag = (m[1] as string).toLowerCase();
+      const start = m.index + m[0].length - (m[m.length - 1] ?? '').length;
+      const close = t.toLowerCase().indexOf(`</${tag}`, start);
+      const body = t.slice(start, close < 0 ? Math.min(t.length, start + 20000) : Math.min(close, start + 20000)).replace(/<[^>]{0,300}>/g, '');
       if (!RE.imperative.test(body) && !RE.override.test(body)) return;
       if (prose && inFence(t, m.index)) return;
       // Hidden instructions that also override, conceal or touch secrets are an attack, not a styling accident.
       const loud = RE.override.test(body) || RE.conceal.test(body) || RE.secretFiles.test(body);
-      emit(ctx, 'SG104', m.index, isTestPath(unit.file) ? 'low' : loud ? 'high' : 'medium', 'Text styled to be invisible (zero size, zero opacity or hidden) contains instructions.', body.trim().replace(/\s+/g, ' ').slice(0, 160));
+      emit(ctx, 'SG104', m.index, inTests(unit) ? 'low' : loud ? 'high' : 'medium', 'Text styled to be invisible (zero size, zero opacity or hidden) contains instructions.', body.trim().replace(/\s+/g, ' ').slice(0, 160));
     });
   // SG105: the description decides when an agent loads an item, so that is where hijacking bites.
   if (k === 'metadata')
@@ -267,7 +307,7 @@ export function scanUnit(unit: TextUnit): Finding[] {
   });
 
   // SG205: actually reading credentials (or dumping the environment) and sending data out, in the same non-test file.
-  if (k !== 'docs' && !isTestPath(unit.file)) {
+  if (k !== 'docs' && !inTests(unit)) {
     const secret = ctx.out.find((f) => (f.rule === 'SG203' || f.rule === 'SG204') && SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER.medium);
     // A POST to a hard-coded host in code is only "low" on its own — next to credential access it is the whole attack.
     const send = ctx.out.find((f) => (f.rule === 'SG201' || f.rule === 'SG202') && SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER.low);
