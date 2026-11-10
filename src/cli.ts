@@ -1,0 +1,269 @@
+import { writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { parseArgs, type ParseArgsConfig } from 'node:util';
+import { discoverMachine, discoverPath } from './discover.ts';
+import { c, setColor } from './format.ts';
+import { buildLock, defaultLockPath, diffLock, readLock, writeLock } from './lock.ts';
+import { parseJsonc } from './parse.ts';
+import { renderDiff, renderExplain, renderInventory, renderRules, renderTerminal, toJson, toMarkdown, toSarif } from './report.ts';
+import { scanItems, type Suppression } from './scan.ts';
+import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Host, type Item, type Severity } from './types.ts';
+import { exists, home, isObject, readText, tildify } from './util.ts';
+import { VERSION } from './version.ts';
+
+const HELP = `${c.bold('skill-guard')} — find prompt injection, exfiltration and hidden instructions
+in the Skills, plugins, hooks and MCP servers your AI agents run.
+
+${c.bold('Usage')}
+  skill-guard [command] [path…] [options]
+
+${c.bold('Commands')}
+  scan [path…]     Scan everything installed on this machine, or the given folders (default)
+  list [path…]     Inventory: every skill, plugin, hook and MCP server, with its risk
+  lock [path]      Record what is installed now, so later changes are flagged
+  diff [path]      Show what changed since the last lock (new hooks, edited skills, swapped servers)
+  explain <rule>   Why a rule matters and how to fix it
+  rules            List all rules
+
+${c.bold('Options')}
+      --host <name>      Only these agents: claude, codex, cursor, opencode, deepseek, desktop, vscode, agents
+      --min <level>      Show findings at or above: critical, high, medium (default), low, info
+      --fail-on <level>  Exit with code 1 if a finding is at or above this level (default: high; "none" to disable)
+      --json             JSON report on stdout
+      --sarif <file>     Write SARIF 2.1.0 (for GitHub code scanning); "-" for stdout
+      --md               Markdown report (PR comments, CI summaries)
+      --config <file>    Suppressions file (default: .skill-guard.json in the scanned folder or ~/.config/skill-guard/)
+      --lock <file>      Lock file for lock/diff (default: ~/.config/skill-guard/lock.json, or <path>/skill-guard.lock.json)
+  -v, --verbose          Show every finding and skipped file
+      --no-color         Disable colors
+
+${c.bold('Examples')}
+  npx skill-guard                           scan every agent on this machine
+  npx skill-guard scan ./some-skill         check a skill before installing it
+  npx skill-guard scan . --sarif out.sarif  CI: scan a repository's agent config
+  skill-guard lock && skill-guard diff      get told when a plugin update adds a hook
+
+Everything runs locally. Nothing is executed, nothing is uploaded.
+`;
+
+const OPTIONS = {
+  host: { type: 'string', multiple: true },
+  min: { type: 'string' },
+  'fail-on': { type: 'string' },
+  json: { type: 'boolean' },
+  sarif: { type: 'string' },
+  md: { type: 'boolean' },
+  config: { type: 'string' },
+  lock: { type: 'string' },
+  verbose: { type: 'boolean', short: 'v' },
+  'no-color': { type: 'boolean' },
+  help: { type: 'boolean', short: 'h' },
+  version: { type: 'boolean' },
+} satisfies ParseArgsConfig['options'];
+
+type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>['values'];
+
+class UsageError extends Error {}
+
+const LEVELS: Severity[] = ['critical', 'high', 'medium', 'low', 'info'];
+
+function level(v: string | undefined, fallback: Severity, name: string): Severity {
+  if (v === undefined) return fallback;
+  if (!LEVELS.includes(v as Severity)) throw new UsageError(`${name} must be one of: ${LEVELS.join(', ')}`);
+  return v as Severity;
+}
+
+const HOST_ALIASES: Record<string, Host> = {
+  claude: 'claude-code',
+  'claude-code': 'claude-code',
+  cc: 'claude-code',
+  codex: 'codex',
+  cursor: 'cursor',
+  opencode: 'opencode',
+  deepseek: 'deepseek-harness',
+  dsh: 'deepseek-harness',
+  'deepseek-harness': 'deepseek-harness',
+  desktop: 'claude-desktop',
+  'claude-desktop': 'claude-desktop',
+  vscode: 'vscode',
+  code: 'vscode',
+  agents: 'agents',
+};
+
+function hosts(v: Values): Host[] {
+  const out: Host[] = [];
+  for (const raw of v.host ?? []) {
+    for (const name of raw.split(',').filter(Boolean)) {
+      const h = HOST_ALIASES[name.toLowerCase()];
+      if (!h) throw new UsageError(`Unknown host "${name}". Use: ${Object.keys(HOST_ALIASES).join(', ')}`);
+      out.push(h);
+    }
+  }
+  return out;
+}
+
+function loadSuppressions(v: Values, targets: string[]): Suppression[] {
+  const candidates = v.config ? [resolve(v.config)] : [...targets.map((t) => join(resolve(t), '.skill-guard.json')), join(process.cwd(), '.skill-guard.json'), join(home(), '.config', 'skill-guard', 'config.json')];
+  for (const file of candidates) {
+    if (!exists(file)) {
+      if (v.config) throw new UsageError(`Config file not found: ${file}`);
+      continue;
+    }
+    const r = readText(file);
+    const cfg = 'text' in r ? parseJsonc(r.text) : undefined;
+    if (!isObject(cfg)) throw new UsageError(`Could not parse ${file}`);
+    const list = Array.isArray(cfg.ignore) ? cfg.ignore : [];
+    return list.filter(isObject).map((s) => {
+      const out: Suppression = { rule: String(s.rule ?? '*') };
+      if (typeof s.item === 'string') out.item = s.item;
+      if (typeof s.path === 'string') out.path = s.path;
+      if (typeof s.reason === 'string') out.reason = s.reason;
+      return out;
+    });
+  }
+  return [];
+}
+
+function discover(v: Values, targets: string[]): Item[] {
+  if (!targets.length) return discoverMachine({ hosts: hosts(v) });
+  const items: Item[] = [];
+  for (const t of targets) {
+    const p = resolve(t);
+    if (!exists(p)) throw new UsageError(`No such file or folder: ${t}`);
+    items.push(...discoverPath(p));
+  }
+  return items;
+}
+
+function cmdScan(v: Values, targets: string[]): number {
+  const t0 = performance.now();
+  const items = discover(v, targets);
+  const result = scanItems(items, { suppressions: loadSuppressions(v, targets) });
+  const elapsed = performance.now() - t0;
+  const min = level(v.min, 'medium', '--min');
+  const failOn = v['fail-on'] === 'none' ? null : level(v['fail-on'], 'high', '--fail-on');
+  if (v.sarif) {
+    const sarif = toSarif(result, targets[0] ? resolve(targets[0]) : process.cwd());
+    if (v.sarif === '-') process.stdout.write(sarif + '\n');
+    else writeFileSync(v.sarif, sarif);
+  }
+  if (v.json) process.stdout.write(toJson(result) + '\n');
+  else if (v.md) process.stdout.write(toMarkdown(result, min) + '\n');
+  else if (v.sarif !== '-') {
+    const title = targets.length ? `scanned ${targets.map((t) => tildify(resolve(t))).join(', ')}:` : 'scanned';
+    console.log(renderTerminal(result, { min, verbose: !!v.verbose, elapsedMs: elapsed, suppressed: result.suppressed, title }));
+    if (!items.length) console.log(c.dim(targets.length ? '\nNothing an agent would load was found here (no SKILL.md, plugin.json, hooks, MCP config or CLAUDE.md/AGENTS.md).' : '\nNo agents found. Pass a folder to scan it, e.g. `skill-guard scan ./my-skill`.'));
+    if (v.sarif && v.sarif !== '-') console.log(c.dim(`SARIF written to ${v.sarif}`));
+  }
+  if (failOn && result.findings.some((f) => atLeast(f.severity, failOn))) return 1;
+  return 0;
+}
+
+function cmdList(v: Values, targets: string[]): number {
+  const items = discover(v, targets);
+  const result = scanItems(items, { suppressions: loadSuppressions(v, targets) });
+  if (v.json) process.stdout.write(toJson(result) + '\n');
+  else console.log(renderInventory(result));
+  return 0;
+}
+
+function lockPath(v: Values, targets: string[]): string {
+  return v.lock ? resolve(v.lock) : defaultLockPath(targets[0] ? resolve(targets[0]) : undefined);
+}
+
+function cmdLock(v: Values, targets: string[]): number {
+  const items = discover(v, targets);
+  const path = lockPath(v, targets);
+  writeLock(path, buildLock(items, VERSION));
+  console.log(`${c.green('✓')} Locked ${items.length} items → ${tildify(path)}`);
+  console.log(c.dim('Run `skill-guard diff` any time to see what changed since now.'));
+  return 0;
+}
+
+function cmdDiff(v: Values, targets: string[]): number {
+  const path = lockPath(v, targets);
+  const lock = readLock(path);
+  if (!lock) throw new UsageError(`No lock file at ${tildify(path)}. Run \`skill-guard lock\` first.`);
+  const items = discover(v, targets);
+  const changes = diffLock(lock, items);
+  // Scan only what is new or changed: that is what you have not reviewed yet.
+  const touched = new Set(changes.filter((ch) => ch.status !== 'removed').map((ch) => ch.id));
+  const result = scanItems(
+    items.filter((i) => touched.has(i.id)),
+    { suppressions: loadSuppressions(v, targets) },
+  );
+  if (v.json) {
+    process.stdout.write(toJson(result, changes) + '\n');
+  } else {
+    console.log(renderDiff(changes, path));
+    if (result.findings.some((f) => SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER.medium)) {
+      console.log('');
+      console.log(renderTerminal(result, { min: level(v.min, 'medium', '--min'), verbose: !!v.verbose, elapsedMs: 0, suppressed: result.suppressed, title: 'findings in new or changed items:' }));
+    }
+  }
+  const failOn = v['fail-on'] === 'none' ? null : level(v['fail-on'], 'high', '--fail-on');
+  return failOn && result.findings.some((f) => atLeast(f.severity, failOn)) ? 1 : changes.length ? 0 : 0;
+}
+
+export function main(argv: string[]): number {
+  let parsed;
+  try {
+    parsed = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, strict: true });
+  } catch (err) {
+    console.error(c.red((err as Error).message));
+    console.error(c.dim('Run `skill-guard --help` for usage.'));
+    return 2;
+  }
+  const v = parsed.values;
+  if (v['no-color'] || v.json || v.sarif === '-' || v.md) setColor(false);
+  if (v.version) {
+    console.log(VERSION);
+    return 0;
+  }
+  const COMMANDS = ['scan', 'list', 'ls', 'lock', 'diff', 'explain', 'rules', 'help'];
+  let [cmd = 'scan', ...rest] = parsed.positionals;
+  // `skill-guard ./path` means `skill-guard scan ./path`
+  if (!COMMANDS.includes(cmd)) {
+    rest = [cmd, ...rest];
+    cmd = 'scan';
+  }
+  if (v.help || cmd === 'help') {
+    console.log(HELP);
+    return 0;
+  }
+  try {
+    switch (cmd) {
+      case 'scan':
+        return cmdScan(v, rest);
+      case 'list':
+      case 'ls':
+        return cmdList(v, rest);
+      case 'lock':
+        return cmdLock(v, rest);
+      case 'diff':
+        return cmdDiff(v, rest);
+      case 'explain': {
+        const text = rest[0] ? renderExplain(rest[0]) : null;
+        if (!text) {
+          console.error(c.red(rest[0] ? `Unknown rule "${rest[0]}".` : 'Usage: skill-guard explain <rule>') + c.dim(' Run `skill-guard rules` for the list.'));
+          return 2;
+        }
+        console.log(text);
+        return 0;
+      }
+      case 'rules':
+        console.log(renderRules());
+        return 0;
+    }
+  } catch (err) {
+    if (err instanceof UsageError) {
+      console.error(c.red(err.message));
+      return 2;
+    }
+    console.error(c.red('Error: ') + ((err as Error)?.stack ?? String(err)));
+    return 1;
+  }
+  return 0;
+}
+
+export { HOST_LABELS };
