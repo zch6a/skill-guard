@@ -216,6 +216,10 @@ export function renderDiff(changes: ItemChange[], lockPath: string): string {
   const icon = { added: c.green('+ new    '), removed: c.dim('- removed'), changed: c.yellow('~ changed') };
   for (const ch of changes) {
     out.push(`${icon[ch.status]}  ${KIND_LABEL[ch.entry.kind]}  ${c.bold(ch.entry.name)}  ${c.dim(HOST_LABELS[ch.entry.host])}`);
+    const caps = ch.capabilities;
+    if (caps?.gained.length) out.push(`             ${c.yellow('now also: ' + caps.gained.map((x) => CAPABILITY_LABEL[x]).join(' '))}`);
+    if (caps?.lost.length) out.push(`             ${c.dim('no longer: ' + caps.lost.map((x) => CAPABILITY_LABEL[x]).join(' '))}`);
+    if (ch.status === 'added' && caps?.now.length) out.push(`             ${c.dim('can: ' + caps.now.map((x) => CAPABILITY_LABEL[x]).join(' '))}`);
     if (ch.before !== undefined) out.push(`             ${c.red('was ' + fit(ch.before, 100))}\n             ${c.green('now ' + fit(ch.entry.summary ?? '', 100))}`);
     else if (ch.status === 'added' && ch.entry.summary) out.push(`             ${c.dim(fit(ch.entry.summary, 100))}`);
     if (ch.files) {

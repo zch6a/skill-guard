@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { discoverMachine, discoverPath } from './discover.ts';
 import { c, plural, setColor } from './format.ts';
-import { buildLock, defaultLockPath, diffLock, readLock, writeLock } from './lock.ts';
+import { annotateCapabilities, buildLock, defaultLockPath, diffLock, readLock, writeLock } from './lock.ts';
 import { parseJsonc } from './parse.ts';
 import { renderDiff, renderExplain, renderInventory, renderRules, renderTerminal, toJson, toMarkdown, toSarif } from './report.ts';
 import { scanItems, type Suppression } from './scan.ts';
@@ -225,7 +225,8 @@ function lockPath(v: Values, targets: string[]): string {
 async function cmdLock(v: Values, targets: string[]): Promise<number> {
   const items = await load(v, targets);
   const path = lockPath(v, targets);
-  writeLock(path, buildLock(items, VERSION));
+  // Scanning records what each item can do, so a later diff can say "now also talks to the network".
+  writeLock(path, buildLock(items, VERSION, scanItems(items).capabilities));
   console.log(`${c.green('✓')} Locked ${items.length} items → ${tildify(path)}`);
   console.log(c.dim('Run `skill-guard diff` any time to see what changed since now.'));
   return 0;
@@ -243,6 +244,7 @@ async function cmdDiff(v: Values, targets: string[]): Promise<number> {
     items.filter((i) => touched.has(i.id)),
     { suppressions: loadSuppressions(v, targets) },
   );
+  annotateCapabilities(changes, lock, result.capabilities);
   if (v.json) {
     process.stdout.write(toJson(result, changes) + '\n');
   } else {

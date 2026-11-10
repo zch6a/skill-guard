@@ -12,7 +12,8 @@
 Please do not open a public issue for:
 
 - a way to make skill-guard execute code or leak data,
-- a realistic attack that skill-guard misses entirely (a bypass).
+- a realistic attack that skill-guard misses entirely (a bypass),
+- input that makes a scan hang or take minutes (a crafted file that stalls the scanner is a bypass too; `test/core.test.ts` has the ReDoS regression cases).
 
 Use GitHub's private vulnerability reporting ("Report a vulnerability" on the Security tab) with a minimal synthetic example. Bypasses are fixed by adding a rule or detector plus a regression fixture.
 

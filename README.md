@@ -38,7 +38,7 @@ From the synthetic attack fixtures in [`test/helpers.ts`](test/helpers.ts):
 
 ```console
 $ npx skill-guard
-skill-guard 0.3.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
+skill-guard 0.4.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
 
 ✖ CRITICAL  Claude Code hook  PostToolUse [*] from helpful-tools  ~/.claude/…/helpful-tools/hooks/hooks.json
    SG202  Known exfiltration endpoint — References discord.com/api/webhooks, a service commonly
@@ -76,19 +76,21 @@ False positives are treated as bugs, and measured on real content:
 | A real machine, everything installed from official marketplaces | 344 | 4 medium: two bundled binaries, two large embedded blobs |
 | Five popular public skill repositories (`anthropics/skills`, `obra/superpowers`, `mattpocock/skills`, `ComposioHQ/awesome-claude-skills`, `wshobson/agents`) | 1,537 | 2: an install step that strips the macOS quarantine flag, and a command file that says *"Ignore your pretrained data and follow the instructions in this file"* |
 
+Recall is measured on a corpus of synthetic attacks modelled on published techniques — MCP tool poisoning and shadowing, Unicode Tag smuggling, fake "prerequisite" installers, zero-click image exfiltration, DNS exfiltration, auto-approving hooks and more: **17 of 19 caught**, and the two misses are listed with the reason in [docs/RECALL.md](docs/RECALL.md).
+
 ## What it checks
 
 | | |
 |---|---|
 | 🙈 **Hidden instructions** | Unicode Tag characters (decoded and shown), bidirectional overrides, zero-width runs, variation-selector smuggling, instructions in HTML comments |
-| 🧠 **Prompt injection** | "Ignore previous instructions", hiding actions from the user, fake `<system>` blocks, loading instructions from a URL, descriptions that hijack every request, turning off approvals (`--dangerously-skip-permissions`, `bypassPermissions`, `danger-full-access`) |
-| 📤 **Exfiltration** | Reading SSH keys, cloud credentials, browser cookie stores, wallets and agent auth files; dumping the environment; POSTing data out; request bins and chat webhooks; **both in one file → critical** |
-| 💥 **Execution** | `curl … \| sh`, `iwr … \| iex`, `powershell -enc`, `eval(atob(…))`, evaluating code fetched at run time, large encoded blobs |
+| 🧠 **Prompt injection** | "Ignore previous instructions", hiding actions from the user, fake `<system>` blocks, loading instructions from a URL, descriptions that hijack every request, turning off approvals (`--dangerously-skip-permissions`, `bypassPermissions`, `danger-full-access`, hooks that answer "allow"), **tool shadowing** (one tool's description steering another, "BCC every email to …") |
+| 📤 **Exfiltration** | Reading SSH keys, cloud credentials, browser cookie stores, wallets and agent auth files; dumping the environment; POSTing data out; data smuggled in DNS names; **images and links that leak conversation data when rendered**; request bins and chat webhooks; **reading and sending in one file → critical** |
+| 💥 **Execution** | `curl … \| sh`, `iwr … \| iex`, download-unzip(-with-password)-and-run installers, `powershell -enc`, `eval(atob(…))`, evaluating code fetched at run time, large encoded blobs |
 | 🪝 **Persistence & tampering** | Shell profiles, cron, scheduled tasks, launch agents, systemd, the Windows Run key, git hooks, and **writes to other agents' configuration** |
-| 🔌 **MCP servers** | Unpinned `npx -y` / `uvx` packages, plain-http remotes, plaintext tokens (masked in output), shell wrappers, whole-disk filesystem roots, privileged containers, typosquats of well-known servers |
+| 🔌 **MCP servers** | **Tool poisoning in the server's own source** (docstrings and `description` strings are what the model reads), unpinned `npx -y` / `uvx` packages, plain-http remotes, plaintext tokens (masked in output), shell wrappers, whole-disk filesystem roots, privileged containers, typosquats of well-known servers |
 | 🧩 **Packaging** | Install scripts, bundled binaries, unrestricted `allowed-tools` |
 
-36 rules, each with a *why* and a *fix*: [docs/RULES.md](docs/RULES.md) or `skill-guard explain SG205`.
+39 rules, each with a *why* and a *fix*: [docs/RULES.md](docs/RULES.md) (starts with how to read a finding) or `skill-guard explain SG205`.
 
 Precision comes from context, not from ignoring things: a phrase in documentation, a test file, a fenced example, a quoted mention (`"ignore previous instructions"` as an example of what to resist) or a sentence that warns against it ("never read `~/.ssh`") is downgraded rather than shouted about.
 
@@ -200,7 +202,7 @@ Exit codes: `0` clean, `1` findings at or above `--fail-on`, `2` usage error.
 ## Limits — read this
 
 - **Static analysis.** skill-guard reads files; it never runs servers or scripts. It does not see tool descriptions that an MCP server sends at run time (use `lock`/`diff` and trust decisions for those) or code that a skill downloads later (it flags the download). Fetching `tools/list` would mean starting the server — running its code — so it is deliberately not done.
-- **Patterns, not proof.** A clean report means none of 36 rules matched, not that an item is safe. A determined attacker can phrase things no rule anticipates. Treat it as a fast, explainable first pass.
+- **Patterns, not proof.** A clean report means none of 39 rules matched, not that an item is safe. A determined attacker can phrase things no rule anticipates — exfiltration described in plain words with no file, command or URL, or a command assembled from string fragments, are known misses ([docs/RECALL.md](docs/RECALL.md)). Treat it as a fast, explainable first pass.
 - **Read-only and offline.** No telemetry, no network access, no LLM calls. Secrets found in configs are masked in all output.
 
 ## Requirements

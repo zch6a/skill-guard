@@ -4,7 +4,7 @@ import { findHidden, reveal } from '../unicode.ts';
 import { lineAt } from '../util.ts';
 import { RULE_BY_ID } from './catalog.ts';
 import { IMPERATIVE_NEAR, SHELL_FILE, contextual, eachMatch, emit, inFence, isTestPath, lower, type Ctx } from './context.ts';
-import { RE } from './patterns.ts';
+import { RE, findBlobs } from './patterns.ts';
 
 /** Run every content rule over one unit of text. */
 export function scanUnit(unit: TextUnit): Finding[] {
@@ -71,6 +71,12 @@ export function scanUnit(unit: TextUnit): Finding[] {
     const sev = contextual('SG108', ctx, m.index, { docs: 2 }, m[0].length, false);
     if (sev) emit(ctx, 'SG108', m.index, sev, `Disables approvals or the sandbox (${m[0].trim()}).`);
   });
+  // A hook script that answers "allow": only in code that runs (hook-writing guides show the same JSON).
+  if (k === 'code' || k === 'command')
+    eachMatch(t, RE.hookAllow, (m) => {
+      const sev = contextual('SG108', ctx, m.index, {}, m[0].length, false);
+      if (sev) emit(ctx, 'SG108', m.index, sev, `A hook that approves tool calls by itself (${m[0].trim()}).`);
+    });
   if (prose)
     eachMatch(t, RE.noApprovalWords, (m) => {
       const sentence = t.slice(Math.max(0, t.lastIndexOf('.', m.index) + 1, t.lastIndexOf('\n', m.index) + 1), m.index);
@@ -78,6 +84,22 @@ export function scanUnit(unit: TextUnit): Finding[] {
       const sev = contextual('SG108', ctx, m.index, { docs: 2, instructions: 1 }, m[0].length);
       if (sev) emit(ctx, 'SG108', m.index, sev, `Asks to run without approvals (${m[0].trim()}).`);
     });
+  // SG109 tool shadowing. Skills legitimately tell the model how to use tools ("when calling Read,
+  // read the whole file"); a *tool description* doing so is one tool steering another. Copying
+  // messages to a fixed address is suspicious anywhere.
+  if (prose) {
+    if (unit.origin === 'tool-description')
+      eachMatch(t, RE.shadowTool, (m) => {
+        const sev = contextual('SG109', ctx, m.index, { docs: 2 }, m[0].length);
+        if (sev) emit(ctx, 'SG109', m.index, sev, `Gives instructions for another tool: "${m[0].slice(0, 80)}".`);
+      });
+    eachMatch(t, RE.email, (m) => {
+      const around = t.slice(Math.max(0, m.index - 60), m.index + m[0].length + 60);
+      if (!RE.shadowCopy.test(around) || /(^|\n)\s*(cc|bcc)\s*:/i.test(around)) return; // an email header example is not an instruction
+      const sev = contextual('SG109', ctx, m.index, { docs: 2 }, m[0].length);
+      if (sev) emit(ctx, 'SG109', m.index, sev, `Asks for copies of messages to be sent to ${m[0]}.`);
+    });
+  }
 
   // exfiltration
   eachMatch(t, RE.exfilHost, (m) => {
@@ -97,6 +119,21 @@ export function scanUnit(unit: TextUnit): Finding[] {
     const sev = contextual('SG201', ctx, m.index, { docs: 2, metadata: 1 }, 0);
     if (sev) emit(ctx, 'SG201', m.index, lower(sev, extra), external ? 'Sends data to an external server.' : 'Sends data to a server.');
   });
+  // A command substitution inside a looked-up hostname has one purpose: carrying data out through DNS.
+  if (k === 'command' || k === 'instructions' || SHELL_FILE.test(unit.file ?? ''))
+    eachMatch(t, RE.dnsExfil, (m) => {
+    const sev = contextual('SG201', ctx, m.index, { docs: 2 }, m[0].length, false);
+    if (sev) emit(ctx, 'SG201', m.index, sev, 'Sends data out inside a DNS name.');
+  });
+  // SG206: an image or link the client renders, with conversation data in its query string.
+  if (prose)
+    eachMatch(t, RE.linkUrl, (m) => {
+      const url = m[1] ?? m[2] ?? '';
+      const q = url.search(RE.linkQuery);
+      if (q < 0 || !RE.linkSlot.test(url.slice(q))) return;
+      const sev = contextual('SG206', ctx, m.index, { docs: 2 }, m[0].length, false);
+      if (sev) emit(ctx, 'SG206', m.index, sev, 'Puts conversation data into a URL the client will load.');
+    }, 20);
   eachMatch(t, RE.secretFiles, (m) => {
     // A mention is not access: require a read/copy/send verb on the line for full severity.
     const line = lineAt(t, m.index, 600);
@@ -118,6 +155,20 @@ export function scanUnit(unit: TextUnit): Finding[] {
     const sev = contextual('SG301', ctx, m.index, { docs: 2 }, m[0].length, false);
     if (sev) emit(ctx, 'SG301', m.index, sev, 'Pipes a download straight into an interpreter.');
   });
+  // SG305: download an archive/program, then unpack it with a password, clear quarantine or run it.
+  if (k !== 'docs') {
+    const dl = RE.binDownload.exec(t);
+    if (dl) {
+      const pw = RE.binPassword.exec(t);
+      const run = RE.binRun.exec(t);
+      if (pw || run) {
+        // A password-protected archive or a cleared quarantine flag is evasion; a plain download + run is only suspicious.
+        const evasive = !!pw || /xattr/i.test(run?.[0] ?? '');
+        const sev = contextual('SG305', ctx, dl.index, {}, dl[0].length, false);
+        if (sev) emit(ctx, 'SG305', dl.index, evasive ? sev : lower(sev), `Downloads ${dl[0].slice(0, 70)} and ${pw ? 'unpacks it with a password' : evasive ? 'clears the quarantine flag' : 'runs it'}.`);
+      }
+    }
+  }
   eachMatch(t, RE.encodedExec, (m) => {
     const sev = contextual('SG302', ctx, m.index, { docs: 1 }, m[0].length, false);
     if (sev) emit(ctx, 'SG302', m.index, sev, 'Decodes and executes hidden code.');
@@ -128,17 +179,12 @@ export function scanUnit(unit: TextUnit): Finding[] {
       if (sev) emit(ctx, 'SG303', m.index, sev, 'Evaluates code downloaded at run time.');
     });
   if (k !== 'docs' && k !== 'metadata')
-    eachMatch(
-      t,
-      RE.blob,
-      (m) => {
-        // data: URIs for images and fonts are common and harmless in HTML/CSS assets
-        if (/data:(image|font|application\/(font|x-font))[^,]*,\s*$/i.test(t.slice(Math.max(0, m.index - 60), m.index))) return;
-        const sev = contextual('SG304', ctx, m.index, {}) ?? 'medium';
-        emit(ctx, 'SG304', m.index, k === 'instructions' ? 'high' : sev, `A ${m[0].length}-character encoded blob.`, m[0].slice(0, 60) + '…');
-      },
-      2,
-    );
+    for (const b of findBlobs(t, 2)) {
+      // data: URIs for images and fonts are common and harmless in HTML/CSS assets
+      if (/data:(image|font|application\/(font|x-font))[^,]*,\s*$/i.test(t.slice(Math.max(0, b.index - 60), b.index))) continue;
+      const sev = contextual('SG304', ctx, b.index, {}) ?? 'medium';
+      emit(ctx, 'SG304', b.index, k === 'instructions' ? 'high' : sev, `A ${b.text.length}-character encoded blob.`, b.text.slice(0, 60) + '…');
+    }
 
   // persistence & tampering
   eachMatch(t, RE.persist, (m) => {
@@ -156,6 +202,15 @@ export function scanUnit(unit: TextUnit): Finding[] {
       if (!RE.writeVerb.test(line)) return;
       const sev = contextual('SG402', ctx, m.index);
       if (sev) emit(ctx, 'SG402', m.index, sev, `Writes to ${m[0]}, which configures what agents run.`);
+    });
+  // In instructions, talking about agent config is normal (setup guides); asking to *widen permissions* there is not.
+  if (k === 'instructions')
+    eachMatch(t, RE.agentConfig, (m) => {
+      const sentence = lineAt(t, m.index, 400);
+      if (!RE.permissionWidening.test(sentence) || !/\b(add|append|insert|put|set|enable|change|edit|update|write)\b/i.test(sentence)) return;
+      // Paths are routinely written in backticks; the widening request is what matters, so no quoted-mention downgrade.
+      const sev = contextual('SG402', ctx, m.index, { instructions: 1 }, m[0].length, false);
+      if (sev) emit(ctx, 'SG402', m.index, sev, `Asks to widen the agent's permissions in ${m[0]}.`);
     });
   eachMatch(t, RE.gitHooks, (m) => {
     const line = lineAt(t, m.index, 400);

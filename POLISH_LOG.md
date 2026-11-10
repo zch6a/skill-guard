@@ -59,9 +59,25 @@ Beyond the backlog:
 
 48 tests (was 45). Corpus: matches baseline. This machine: unchanged (4 medium).
 
-## Round 3 — backlog
+## Round 3 — v0.4.0 (2026-11-11)
 
-- [ ] Recall corpus: a set of *synthetic* malicious skills modelled on published 2026 attack write-ups (ToxicSkills, Skill-Inject, MCP tool poisoning) as fixtures, measured like the precision corpus.
-- [ ] Regex CPU time (~1.2 s): pre-filter units with a cheap combined keyword test before running every pattern.
-- [ ] `diff`: show capability changes ("now also: net") — a plugin update that starts talking to the network is the interesting part.
-- [ ] Docs: a short "How to read a finding" section (severity, context downgrades, when to suppress).
+- [x] **Recall corpus** (`test/attacks.ts` → `test/recall.test.ts`, generated `docs/RECALL.md`): 19 synthetic repositories, one per published technique, written to temp folders at test time (never as real skill files in this repo). **First measurement: 9 of 17 caught (53%).** The misses were structural, not phrasing:
+  - MCP servers' own source was never scanned (`files: []`), and a tool docstring would have been downgraded as a code comment anyway — so classic tool poisoning was invisible. Now: local scripts in `command`/`args` are resolved like hook scripts, and tool descriptions (docstrings, `description=`, `.describe()`, `server.tool(name, desc)`) become *instructions* units tagged `origin: tool-description`.
+  - No rule for download-unpack(-with-password)-run (SG305), image/link exfiltration (SG206), tool shadowing (SG109); DNS exfil and `permissionDecision: "allow"` hooks not covered; "don't mention … to the user" phrasing missed.
+  - Now **17 of 17**, plus 2 documented gaps (plain-words exfiltration; a command assembled from string fragments).
+- [x] **Precision of the new rules**, checked on this machine before trusting them: SG109 fired (high) on "preferred when the Workflow tool is available" — skills legitimately coach tool use, so instruction-about-another-tool now only counts in tool descriptions; SG108 fired on hook-writing docs showing `{"decision": "approve"}` — now code-only; DNS exfil fired on minified JS (`host!=="docs.google.com"…$(`) — now shell context with a lookbehind. Negative tests for each. Public corpus: unchanged baseline. This machine: 74 findings, identical to v0.3.0.
+- [x] **A bypass found while fixing SG402**: "To *avoid* interruptions, add `Bash(*)` …" was downgraded two levels because `avoid` counts as a negation. Any attacker could prefix "Don't worry," to quiet an instruction. Negations confined to an earlier clause (separator + imperative after them) no longer apply. Test added.
+- [x] **`diff` shows capability changes** (`now also: net`, `no longer: write`, `can:` for new items); lock entries record capabilities (optional field, old locks keep working); end-to-end test where an update makes a skill upload notes.
+- [x] **Speed**: profile said regex 54%. Literal pre-filters for 8 patterns whose every alternative contains a known literal (lists checked by hand, plus a coverage test) — first version did `includes()` per literal per pattern and was *slower* (694 ms in the guard itself); replaced by one lookahead pass per unit. Base64 blob regex replaced by a linear char-code scan, checked against the old regex on 400 randomized inputs (which immediately found an overlap edge case). Net: 2.5 s → 2.2 s with more rules and more files.
+- [x] **Docs**: "How to read a finding" at the top of RULES.md; README (en/zh) checks table, recall line, limits naming the gaps; CONTRIBUTING (recall cases, bounded quantifiers, literal lists); SECURITY (scanner-stalling input is a vulnerability).
+
+**Security finding of the round — ReDoS.** An adversarial-input timing script showed the new image-exfil pattern took **124 s** on a 200 KB line, and fuzzing every pattern found the e-mail and ngrok patterns quadratic too. A malicious skill could stall the scan (in CI, until timeout) — effectively a bypass. Rewrote the link rule as bounded match + separate URL checks, and bounded all 35 open-ended negated-class quantifiers. Worst case on the hostile shapes: < 60 ms. Regression test with eight shapes × three unit kinds.
+
+72 tests + 2 todo (was 48).
+
+## Round 4 — backlog
+
+- [ ] Recall corpus round 2: more techniques — instructions in image alt text / SVG, prompt injection via `.cursor/rules` globs, poisoned `CLAUDE.md` in a cloned repo, malicious `postinstall` of an MCP server dependency.
+- [ ] Split-payload gap: light shell evaluation (join adjacent string literals and simple variable assignments before matching).
+- [ ] The full scan still re-reads every file for `lock` hashing (`readFileSync` in `fileHash`) — use the prefetch cache.
+- [ ] Review the 400-char bounds against real long command lines (minified one-liners) — any lost true positive in the corpora?

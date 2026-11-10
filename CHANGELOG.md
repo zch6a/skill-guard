@@ -2,6 +2,26 @@
 
 All notable changes are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [0.4.0] — 2026-11-11
+
+### Added
+
+- **MCP tool poisoning in server source.** A local MCP server's script (`python server.py`, `node ./index.js`, `${CLAUDE_PLUGIN_ROOT}/…`) is now scanned, and its tool docstrings / `description` strings are read as instructions — that text goes straight to the model.
+- New rules: **SG109** tool shadowing (a tool description steering another tool; copying messages to a fixed address), **SG206** data leaked through image/link URLs, **SG305** download-unpack-run of binaries (password-protected archives, cleared quarantine).
+- Also detected now: data sent out inside DNS names, PreToolUse hooks that answer "allow", instructions that widen the agent's own permissions, "don't mention … to the user".
+- Recall corpus: 19 synthetic attacks modelled on published techniques (`test/attacks.ts`, `docs/RECALL.md`) — 17 caught, 2 documented gaps.
+- `diff` shows capability changes: `now also: net` when an update starts talking to the network. Lock files record capabilities (older lock files still work).
+- `docs/RULES.md` starts with how to read a finding.
+
+### Fixed
+
+- **ReDoS**: crafted text could make a scan take minutes (a link pattern took 124 s on a 200 KB line; the e-mail and ngrok patterns were quadratic). Every open-ended quantifier is now bounded; regression tests cover the shapes.
+- A negation in an earlier clause ("To avoid prompts, add …", "Don't worry, just run …") no longer lowers the severity of the instruction after it.
+
+### Changed
+
+- Literal pre-filters and a linear base64 scanner: faster despite the new rules (2.5 s → 2.2 s on this machine, findings identical).
+
 ## [0.3.0] — 2026-11-11
 
 ### Added

@@ -2,6 +2,7 @@ import { basename, dirname, join, relative } from 'node:path';
 import { parseFrontmatter } from './parse.ts';
 import { RULE_BY_ID, isBinaryAsset, scanHook, scanMcp, scanPackageJson, scanSkillMeta, scanUnit } from './rules.ts';
 import { capabilitiesOf } from './capabilities.ts';
+import { toolDescriptions } from './tooldesc.ts';
 import type { Capability, Finding, Item, ScanResult, Severity, TextUnit, UnitKind } from './types.ts';
 import { SEVERITY_ORDER } from './types.ts';
 import { exists, isCodeFile, isObject, readJson, readText, walkFiles, withFsCache } from './util.ts';
@@ -54,6 +55,8 @@ function unitsFor(item: Item, skipped: ScanResult['skipped']): TextUnit[] {
       if (fm.bodyLine > 1) units.push({ item, file, kind: 'metadata', text: r.text.split(/\r?\n/).slice(0, fm.bodyLine - 1).join('\n'), lineOffset: 1 });
       units.push({ item, file, kind: 'instructions', text: fm.body, lineOffset: fm.bodyLine });
     } else units.push({ item, file, kind, text: r.text, lineOffset: 1 });
+    // Tool descriptions in MCP server source are read by the model: scan them as instructions.
+    if (kind === 'code') for (const d of toolDescriptions(r.text)) units.push({ item, file, kind: 'instructions', text: d.text, lineOffset: d.line, origin: 'tool-description' });
   }
   return units;
 }
@@ -154,7 +157,7 @@ function scanItemsUncached(items: Item[], opts: ScanOptions): ScanResult & { sup
     const units = unitsFor(item, skipped);
     const own: Finding[] = [];
     for (const unit of units) {
-      const key = unit.file && unit.kind !== 'command' ? `${unit.kind}|${unit.lineOffset ?? 1}|${unit.file}` : undefined;
+      const key = unit.file && unit.kind !== 'command' ? `${unit.kind}|${unit.origin ?? ''}|${unit.lineOffset ?? 1}|${unit.file}` : undefined;
       let found = key ? memo.get(key) : undefined;
       if (!found) {
         found = scanUnit(unit);

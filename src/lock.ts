@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
-import type { Item } from './types.ts';
+import type { Capability, Item } from './types.ts';
 import { exists, home, isDir } from './util.ts';
 
 /**
@@ -23,6 +23,8 @@ export interface LockEntry {
   files: Record<string, string>;
   /** For hooks and MCP servers: the command/URL as approved, for display in diffs. */
   summary?: string;
+  /** What the item could do when locked (absent in locks written before 0.4). */
+  capabilities?: Capability[];
 }
 
 export interface LockFile {
@@ -61,9 +63,9 @@ export function fingerprint(item: Item): LockEntry {
   return entry;
 }
 
-export function buildLock(items: Item[], version: string): LockFile {
+export function buildLock(items: Item[], version: string, capabilities: Record<string, Capability[]> = {}): LockFile {
   const out: LockFile = { version: 1, createdBy: `skill-guard ${version}`, updated: new Date().toISOString(), items: {} };
-  for (const item of items) out.items[item.id] = fingerprint(item);
+  for (const item of items) out.items[item.id] = { ...fingerprint(item), capabilities: capabilities[item.id] ?? [] };
   return out;
 }
 
@@ -98,6 +100,22 @@ export interface ItemChange {
   files?: { added: string[]; removed: string[]; modified: string[] };
   /** For hooks / MCP servers whose command changed: before → after. */
   before?: string;
+  /** Capabilities now (added and changed items), and what was gained or lost since the lock. */
+  capabilities?: { now: Capability[]; gained: Capability[]; lost: Capability[] };
+}
+
+/**
+ * Attach capability information from a scan of the new and changed items. "Now also talks to
+ * the network" is usually the most important line of a plugin update. Locks written before
+ * capabilities were recorded only get `now`.
+ */
+export function annotateCapabilities(changes: ItemChange[], lock: LockFile, capabilities: Record<string, Capability[]> = {}): void {
+  for (const ch of changes) {
+    if (ch.status === 'removed') continue;
+    const now = capabilities[ch.id] ?? [];
+    const before = ch.status === 'changed' ? lock.items[ch.id]?.capabilities : undefined;
+    ch.capabilities = { now, gained: before ? now.filter((c) => !before.includes(c)) : [], lost: before ? before.filter((c) => !now.includes(c)) : [] };
+  }
 }
 
 export function diffLock(lock: LockFile, items: Item[]): ItemChange[] {

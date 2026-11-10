@@ -28,11 +28,14 @@ src/
   rules/mcp.ts       MCP server definitions
   rules/structure.ts hooks, package.json scripts, skill metadata, bundled binaries
   capabilities.ts    what an item can do (auto, code, net, write, shell, bin, creds)
+  tooldesc.ts        MCP tool descriptions inside server source, scanned as instructions
   unicode.ts         invisible-character detection and decoding
   lock.ts            pinning and diff
   report.ts          terminal, JSON, SARIF, Markdown
 test/
   helpers.ts         a fake home directory full of synthetic attacks
+  attacks.ts         the recall corpus: one synthetic repository per attack technique (docs/RECALL.md)
+  recall.test.ts     scans each one; known gaps are reported as todo
 scripts/
   corpus.ts          clones pinned public skill repos (read-only) and compares with corpus.json
 ```
@@ -41,7 +44,9 @@ scripts/
 
 1. Add the rule to `RULES` in `src/rules/catalog.ts` with a clear `why` and `fix`.
 2. Add a detector (usually in `src/rules/text.ts`, pattern in `patterns.ts`). Use `contextual()` so severity is lowered for documentation, tests, fenced examples, quoted mentions and warnings.
-3. Add a **positive** fixture to `test/helpers.ts` and an assertion in `test/detect.test.ts`.
+3. Add a **positive** case: for a new attack technique, a synthetic repository in `test/attacks.ts` (it becomes a row in `docs/RECALL.md`); for a variant, a fixture in `test/helpers.ts` and an assertion in `test/detect.test.ts`.
+   - Keep every quantifier bounded (`[^\n]{0,400}`, not `[^\n]*`): open-ended runs followed by a required literal backtrack quadratically, and a crafted file could stall the scan. The ReDoS test in `test/core.test.ts` has the shapes that caught this before.
+   - If the pattern has an entry in `LITERALS` (`src/rules/patterns.ts`), the new alternative's literal must be added there too, or the pre-filter will skip it.
 4. Add a **negative** case: the most plausible legitimate text that looks similar (e.g. a security skill that *warns* about the pattern).
 5. Run the scanner on your own machine (`npm run dev`) and `npm run corpus`, and check the rule does not fire on legitimate skills. Precision regressions are bugs. If the corpus diff is intended (a new true positive), read every changed line, then `node scripts/corpus.ts --update`.
 6. Regenerate `docs/RULES.md`.

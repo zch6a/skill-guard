@@ -104,6 +104,9 @@ export function normalizeMcp(def: unknown): McpServer {
 function addMcpServers(c: Collector, servers: unknown, host: Host, configPath: string, parent?: Item, project?: string): void {
   for (const [name, def] of Object.entries(obj(servers))) {
     if (!isObject(def)) continue;
+    const mcp = normalizeMcp(def);
+    // A local server's own source is where tool descriptions (and tool poisoning) live.
+    const files = mcp.command ? referencedFiles([mcp.command, ...mcp.args], dirname(configPath), parent?.path) : [];
     c.add({
       id: `${host}:mcp-server:${parent ? parent.name + '/' : ''}${name}${project ? `@${project.replace(/\\/g, '/')}` : ''}`,
       kind: 'mcp-server',
@@ -111,9 +114,9 @@ function addMcpServers(c: Collector, servers: unknown, host: Host, configPath: s
       // "db (work/app)": the last two folders tell projects apart without the full path.
       name: project ? `${name} (${project.replace(/\\/g, '/').replace(/\/+$/, '').split('/').slice(-2).join('/') || project})` : name,
       path: configPath,
-      files: [],
+      files,
       parent: parent?.id,
-      mcp: normalizeMcp(def),
+      mcp,
       meta: project ? { ...def, project } : def,
     });
   }
@@ -130,16 +133,20 @@ function addMcpJson(c: Collector, path: string, host: Host, parent?: Item): void
 
 // ------------------------------------------------------------------ hooks
 
-/** Script files a hook command points at (so their contents get scanned too). */
-function referencedFiles(command: string, base: string, pluginRoot?: string): string[] {
+/**
+ * Script files a hook command or MCP server points at, so their contents get scanned too.
+ * A string is split like a shell would; an array (MCP `command` + `args`) is used token by token.
+ */
+function referencedFiles(command: string | string[], base: string, pluginRoot?: string): string[] {
+  const expand = (s: string) =>
+    s
+      .replace(/\$\{?CLAUDE_PLUGIN_ROOT\}?|\$\{?PLUGIN_ROOT\}?|%CLAUDE_PLUGIN_ROOT%/g, pluginRoot ?? base)
+      .replace(/\$\{?CLAUDE_PROJECT_DIR\}?|%CLAUDE_PROJECT_DIR%/g, base)
+      .replace(/^~(?=[\\/])/, home());
+  const tokens = Array.isArray(command) ? command.map(expand) : [...expand(command).matchAll(/(?:"([^"]+)"|'([^']+)'|(\S+))/g)].map((m) => m[1] ?? m[2] ?? m[3] ?? '');
   const out: string[] = [];
-  const expanded = command
-    .replace(/\$\{?CLAUDE_PLUGIN_ROOT\}?|\$\{?PLUGIN_ROOT\}?|%CLAUDE_PLUGIN_ROOT%/g, pluginRoot ?? base)
-    .replace(/\$\{?CLAUDE_PROJECT_DIR\}?|%CLAUDE_PROJECT_DIR%/g, base)
-    .replace(/^~(?=[\\/])/, home());
-  for (const m of expanded.matchAll(/(?:"([^"]+)"|'([^']+)'|(\S+))/g)) {
-    const tok = m[1] ?? m[2] ?? m[3] ?? '';
-    if (!/\.(sh|bash|py|js|mjs|cjs|ts|ps1|cmd|bat|rb)$/i.test(tok)) continue;
+  for (const tok of tokens) {
+    if (!/\.(sh|bash|py|js|mjs|cjs|ts|mts|ps1|cmd|bat|rb)$/i.test(tok)) continue;
     // resolve() normalises separators so the path matches what a directory walk returns
     const p = isAbsolute(tok) ? resolve(tok) : resolve(base, tok);
     if (exists(p)) out.push(p);
@@ -219,8 +226,8 @@ function addPlugin(c: Collector, root: string, host: Host, manifestPath: string)
   addMcpJson(c, join(root, '.mcp.json'), host, plugin);
   if (isObject(manifest.mcpServers)) addMcpServers(c, manifest.mcpServers, host, manifestPath, plugin);
   else if (typeof manifest.mcpServers === 'string') addMcpJson(c, resolve(root, manifest.mcpServers), host, plugin);
-  // Scripts that a hook points at are scanned as part of that hook, not again as part of the plugin.
-  const owned = new Set(c.items.filter((i) => i.parent === plugin.id && i.kind === 'hook').flatMap((i) => i.files));
+  // Scripts that a hook or MCP server points at are scanned as part of it, not again as part of the plugin.
+  const owned = new Set(c.items.filter((i) => i.parent === plugin.id && (i.kind === 'hook' || i.kind === 'mcp-server')).flatMap((i) => i.files));
   plugin.files = plugin.files.filter((f) => !owned.has(f));
 }
 

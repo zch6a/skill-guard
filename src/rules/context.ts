@@ -1,6 +1,7 @@
 /** Shared machinery for text rules: where a match sits decides how loud it is. */
 import type { Finding, Severity, TextUnit, UnitKind } from '../types.ts';
 import { RULE_BY_ID } from './catalog.ts';
+import { LITERALS, RE } from './patterns.ts';
 import { lineAt, lineCol, maskSecrets } from '../util.ts';
 
 const DOWN: Record<Severity, Severity> = { critical: 'high', high: 'medium', medium: 'low', low: 'info', info: 'info' };
@@ -9,9 +10,17 @@ export const lower = (s: Severity, steps = 1): Severity => (steps <= 0 ? s : low
 /** Words that mean the text is warning *against* the thing it mentions. */
 const NEGATION = /\b(never|not|don'?t|do not|must not|mustn'?t|should not|shouldn'?t|avoid|refuse|prevent|block(?:s|ed)?|detect(?:s|ed|ion)?|flag(?:s|ged)?|warn(?:s|ing)?|forbid(?:den)?|disallow(?:ed)?|prohibit(?:ed)?|without asking first|unless)\b|禁止|不要|切勿|不得|不能|避免/i;
 
+/** After a clause break, an imperative starts a new instruction the earlier negation does not govern. */
+const NEW_CLAUSE = /[,;:—–]\s*(then\s+|just\s+|simply\s+|now\s+|please\s+)?(add|append|run|read|send|set|copy|upload|execute|install|write|put|open|enable|fetch|download|use|call|delete|remove|disable|grant|paste|pipe|go ahead)\b/i;
+
 function negated(text: string, index: number): boolean {
   const start = Math.max(0, text.lastIndexOf('\n', index - 1) + 1, index - 120);
-  return NEGATION.test(text.slice(start, index));
+  const before = text.slice(start, index);
+  const all = [...before.matchAll(new RegExp(NEGATION.source, 'gi'))];
+  const last = all[all.length - 1];
+  if (!last) return false;
+  // "To avoid interruptions, add …", "Don't worry, just run …": the negation is confined to its own clause.
+  return !NEW_CLAUSE.test(before.slice((last.index ?? 0) + last[0].length));
 }
 
 /** "never run …", "do not execute …" earlier in the same line: the sentence forbids running what follows. */
@@ -107,8 +116,44 @@ export function contextual(ruleId: string, ctx: Ctx, index: number, perKind: Par
   return sev;
 }
 
+const GLOBAL = new Map<RegExp, RegExp>();
+const GUARDS = new Map<RegExp, string[]>(Object.entries(LITERALS).map(([name, lits]) => [RE[name as keyof typeof RE] as RegExp, lits]));
+
+// All literals in one pass: a zero-width lookahead at each position, so overlapping occurrences are
+// all seen. A literal contained in a longer one that matched at the same position is added too.
+const ALL = [...new Set(Object.values(LITERALS).flat())].sort((a, b) => b.length - a.length);
+const ANY_LITERAL = new RegExp(`(?=(${ALL.map((l) => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}))`, 'g');
+const CONTAINED = new Map(ALL.map((l) => [l, ALL.filter((s) => s !== l && l.includes(s))]));
+
+// The same unit is matched against dozens of patterns: find its literals once.
+let lastText: string | null = null;
+let present = new Set<string>();
+
+function literalsIn(text: string): Set<string> {
+  if (text === lastText) return present;
+  lastText = text;
+  present = new Set();
+  for (const m of text.toLowerCase().matchAll(ANY_LITERAL)) {
+    const l = m[1] as string;
+    if (present.has(l)) continue;
+    present.add(l);
+    for (const s of CONTAINED.get(l) ?? []) present.add(s);
+  }
+  return present;
+}
+
 export function eachMatch(text: string, re: RegExp, fn: (m: RegExpExecArray) => void, limit = 5): void {
-  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  const guard = GUARDS.get(re);
+  if (guard) {
+    const found = literalsIn(text);
+    if (!guard.some((l) => found.has(l))) return;
+  }
+  let g = GLOBAL.get(re);
+  if (!g) {
+    g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    GLOBAL.set(re, g);
+  }
+  g.lastIndex = 0;
   let m: RegExpExecArray | null;
   let n = 0;
   while ((m = g.exec(text)) && n < limit) {

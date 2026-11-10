@@ -96,6 +96,8 @@ export interface TextUnit {
   text: string;
   /** Line number of `text`'s first line within `file` (1-based). */
   lineOffset?: number;
+  /** Set for MCP tool descriptions extracted from server source (see tooldesc.ts). */
+  origin?: 'tool-description';
 }
 
 export interface RuleInfo {
