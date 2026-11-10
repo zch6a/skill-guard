@@ -4,7 +4,7 @@ import { RULE_BY_ID, isBinaryAsset, scanHook, scanMcp, scanPackageJson, scanSkil
 import { capabilitiesOf } from './capabilities.ts';
 import type { Capability, Finding, Item, ScanResult, Severity, TextUnit, UnitKind } from './types.ts';
 import { SEVERITY_ORDER } from './types.ts';
-import { exists, isCodeFile, isObject, readJson, readText, walkFiles } from './util.ts';
+import { exists, isCodeFile, isObject, readJson, readText, walkFiles, withFsCache } from './util.ts';
 
 export interface Suppression {
   rule: string;
@@ -140,13 +140,28 @@ function suppressed(f: Finding, rules: Suppression[]): Suppression | undefined {
 // ---------------------------------------------------------------- entry point
 
 export function scanItems(items: Item[], opts: ScanOptions = {}): ScanResult & { suppressed: number } {
+  return withFsCache(() => scanItemsUncached(items, opts));
+}
+
+function scanItemsUncached(items: Item[], opts: ScanOptions): ScanResult & { suppressed: number } {
   const findings: Finding[] = [];
   const skipped: ScanResult['skipped'] = [];
   const capabilities: Record<string, Capability[]> = {};
+  // Several items can contain the same file (hooks sharing a script, a plugin and its skills):
+  // run the rules once per file and kind, then attribute the findings to each item.
+  const memo = new Map<string, Finding[]>();
   for (const item of items) {
     const units = unitsFor(item, skipped);
     const own: Finding[] = [];
-    for (const unit of units) own.push(...scanUnit(unit));
+    for (const unit of units) {
+      const key = unit.file && unit.kind !== 'command' ? `${unit.kind}|${unit.lineOffset ?? 1}|${unit.file}` : undefined;
+      let found = key ? memo.get(key) : undefined;
+      if (!found) {
+        found = scanUnit(unit);
+        if (key) memo.set(key, found);
+      }
+      own.push(...(found[0]?.item === item.id ? found : found.map((f) => ({ ...f, item: item.id }))));
+    }
     own.push(...structural(item));
     // Capabilities describe the item, so they use findings before suppression.
     const caps = capabilitiesOf(item, units, own);

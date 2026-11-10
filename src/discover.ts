@@ -1,7 +1,7 @@
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseFrontmatter, parseJsonc, parseToml } from './parse.ts';
 import type { Hook, Host, Item, ItemKind, McpServer } from './types.ts';
-import { exists, home, isCodeFile, isDir, isObject, isTextFile, listDir, obj, readJson, readText, str, stringRecord, strings, walkFiles } from './util.ts';
+import { exists, home, isCodeFile, isDir, isObject, isTextFile, listDir, obj, readJson, readText, str, stringRecord, strings, walkFiles, withFsCache } from './util.ts';
 
 /**
  * Discovery: find every skill, plugin, hook, MCP server and always-loaded
@@ -279,6 +279,10 @@ function appData(): string {
 
 /** Everything installed for the current user, across every supported agent. */
 export function discoverMachine(opts: DiscoverOptions = {}): Item[] {
+  return withFsCache(() => discoverMachineUncached(opts));
+}
+
+function discoverMachineUncached(opts: DiscoverOptions): Item[] {
   const c = new Collector();
   const want = (h: Host) => !opts.hosts?.length || opts.hosts.includes(h);
   const H = home();
@@ -361,6 +365,10 @@ export function discoverMachine(opts: DiscoverOptions = {}): Item[] {
  * about to open, a skill you are about to install, or a plugin checkout.
  */
 export function discoverPath(target: string): Item[] {
+  return withFsCache(() => discoverPathUncached(target));
+}
+
+function discoverPathUncached(target: string): Item[] {
   const root = resolve(target);
   const c = new Collector();
   if (!isDir(root)) {

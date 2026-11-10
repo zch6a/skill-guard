@@ -2,13 +2,13 @@ import { writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { discoverMachine, discoverPath } from './discover.ts';
-import { c, setColor } from './format.ts';
+import { c, plural, setColor } from './format.ts';
 import { buildLock, defaultLockPath, diffLock, readLock, writeLock } from './lock.ts';
 import { parseJsonc } from './parse.ts';
 import { renderDiff, renderExplain, renderInventory, renderRules, renderTerminal, toJson, toMarkdown, toSarif } from './report.ts';
 import { scanItems, type Suppression } from './scan.ts';
-import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Capability, type Host, type Item, type Severity } from './types.ts';
-import { exists, home, isObject, readText, tildify } from './util.ts';
+import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Capability, type Host, type Item, type ScanResult, type Severity } from './types.ts';
+import { exists, home, isObject, prefetch, readText, tildify, withFsCacheAsync } from './util.ts';
 import { VERSION } from './version.ts';
 
 const HELP = `${c.bold('skill-guard')} — find prompt injection, exfiltration and hidden instructions
@@ -27,7 +27,7 @@ ${c.bold('Commands')}
 
 ${c.bold('Options')}
       --host <name>      Only these agents: claude, codex, cursor, opencode, deepseek, desktop, vscode, agents
-      --can <caps>       list: only items with all of these: code, auto, net, write, shell, bin, creds
+      --can <caps>       Only items with all of these capabilities: code, auto, net, write, shell, bin, creds
       --min <level>      Show findings at or above: critical, high, medium (default), low, info
       --fail-on <level>  Exit with code 1 if a finding is at or above this level (default: high; "none" to disable)
       --json             JSON report on stdout
@@ -138,10 +138,19 @@ function discover(v: Values, targets: string[]): Item[] {
   return items;
 }
 
-function cmdScan(v: Values, targets: string[]): number {
-  const t0 = performance.now();
+/** Discover, then read every file the scan will need in parallel (see prefetch). */
+async function load(v: Values, targets: string[]): Promise<Item[]> {
   const items = discover(v, targets);
-  const result = scanItems(items, { suppressions: loadSuppressions(v, targets) });
+  await prefetch(items.flatMap((i) => i.files));
+  return items;
+}
+
+async function cmdScan(v: Values, targets: string[]): Promise<number> {
+  const t0 = performance.now();
+  const want = capabilityFilter(v);
+  const full = scanItems(await load(v, targets), { suppressions: loadSuppressions(v, targets) });
+  const result = restrict(full, withCapabilities(full, want));
+  const items = result.items;
   const elapsed = performance.now() - t0;
   const min = level(v.min, 'medium', '--min');
   const failOn = v['fail-on'] === 'none' ? null : level(v['fail-on'], 'high', '--fail-on');
@@ -155,7 +164,8 @@ function cmdScan(v: Values, targets: string[]): number {
   else if (v.sarif !== '-') {
     const title = targets.length ? `scanned ${targets.map((t) => tildify(resolve(t))).join(', ')}:` : 'scanned';
     console.log(renderTerminal(result, { min, verbose: !!v.verbose, elapsedMs: elapsed, suppressed: result.suppressed, title }));
-    if (!items.length) console.log(c.dim(targets.length ? '\nNothing an agent would load was found here (no SKILL.md, plugin.json, hooks, MCP config or CLAUDE.md/AGENTS.md).' : '\nNo agents found. Pass a folder to scan it, e.g. `skill-guard scan ./my-skill`.'));
+    if (!items.length && full.items.length) console.log(c.dim(`\nNone of the ${plural(full.items.length, 'item')} found has all of: ${want.join(', ')}.`));
+    else if (!items.length) console.log(c.dim(targets.length ? '\nNothing an agent would load was found here (no SKILL.md, plugin.json, hooks, MCP config or CLAUDE.md/AGENTS.md).' : '\nNo agents found. Pass a folder to scan it, e.g. `skill-guard scan ./my-skill`.'));
     if (v.sarif && v.sarif !== '-') console.log(c.dim(`SARIF written to ${v.sarif}`));
   }
   if (failOn && result.findings.some((f) => atLeast(f.severity, failOn))) return 1;
@@ -189,13 +199,21 @@ function capabilityFilter(v: Values): Capability[] {
   return out;
 }
 
-function cmdList(v: Values, targets: string[]): number {
+/** Ids of items with every requested capability: `--can auto,net` = "runs by itself AND talks to the network". */
+function withCapabilities(result: ScanResult, want: Capability[]): Set<string> | undefined {
+  if (!want.length) return undefined;
+  return new Set(result.items.filter((i) => want.every((cap) => result.capabilities?.[i.id]?.includes(cap))).map((i) => i.id));
+}
+
+function restrict<T extends ScanResult>(result: T, keep: Set<string> | undefined): T {
+  return keep ? { ...result, items: result.items.filter((i) => keep.has(i.id)), findings: result.findings.filter((f) => keep.has(f.item)) } : result;
+}
+
+async function cmdList(v: Values, targets: string[]): Promise<number> {
   const want = capabilityFilter(v);
-  const items = discover(v, targets);
-  const result = scanItems(items, { suppressions: loadSuppressions(v, targets) });
-  // Every requested capability must be present: `--can auto,net` = "runs by itself AND talks to the network".
-  const keep = want.length ? new Set(result.items.filter((i) => want.every((cap) => result.capabilities?.[i.id]?.includes(cap))).map((i) => i.id)) : undefined;
-  if (v.json) process.stdout.write(toJson(keep ? { ...result, items: result.items.filter((i) => keep.has(i.id)), findings: result.findings.filter((f) => keep.has(f.item)) } : result) + '\n');
+  const result = scanItems(await load(v, targets), { suppressions: loadSuppressions(v, targets) });
+  const keep = withCapabilities(result, want);
+  if (v.json) process.stdout.write(toJson(restrict(result, keep)) + '\n');
   else console.log(renderInventory(result, keep));
   return 0;
 }
@@ -204,8 +222,8 @@ function lockPath(v: Values, targets: string[]): string {
   return v.lock ? resolve(v.lock) : defaultLockPath(targets[0] ? resolve(targets[0]) : undefined);
 }
 
-function cmdLock(v: Values, targets: string[]): number {
-  const items = discover(v, targets);
+async function cmdLock(v: Values, targets: string[]): Promise<number> {
+  const items = await load(v, targets);
   const path = lockPath(v, targets);
   writeLock(path, buildLock(items, VERSION));
   console.log(`${c.green('✓')} Locked ${items.length} items → ${tildify(path)}`);
@@ -213,11 +231,11 @@ function cmdLock(v: Values, targets: string[]): number {
   return 0;
 }
 
-function cmdDiff(v: Values, targets: string[]): number {
+async function cmdDiff(v: Values, targets: string[]): Promise<number> {
   const path = lockPath(v, targets);
   const lock = readLock(path);
   if (!lock) throw new UsageError(`No lock file at ${tildify(path)}. Run \`skill-guard lock\` first.`);
-  const items = discover(v, targets);
+  const items = await load(v, targets);
   const changes = diffLock(lock, items);
   // Scan only what is new or changed: that is what you have not reviewed yet.
   const touched = new Set(changes.filter((ch) => ch.status !== 'removed').map((ch) => ch.id));
@@ -238,7 +256,7 @@ function cmdDiff(v: Values, targets: string[]): number {
   return failOn && result.findings.some((f) => atLeast(f.severity, failOn)) ? 1 : 0;
 }
 
-export function main(argv: string[]): number {
+export async function main(argv: string[]): Promise<number> {
   let parsed;
   try {
     parsed = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, strict: true });
@@ -266,15 +284,16 @@ export function main(argv: string[]): number {
   }
   try {
     switch (cmd) {
+      // One command = one consistent view of the filesystem, read once.
       case 'scan':
-        return cmdScan(v, rest);
+        return await withFsCacheAsync(() => cmdScan(v, rest));
       case 'list':
       case 'ls':
-        return cmdList(v, rest);
+        return await withFsCacheAsync(() => cmdList(v, rest));
       case 'lock':
-        return cmdLock(v, rest);
+        return await withFsCacheAsync(() => cmdLock(v, rest));
       case 'diff':
-        return cmdDiff(v, rest);
+        return await withFsCacheAsync(() => cmdDiff(v, rest));
       case 'explain': {
         const text = rest[0] ? renderExplain(rest[0]) : null;
         if (!text) {

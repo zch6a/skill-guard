@@ -38,7 +38,7 @@ From the synthetic attack fixtures in [`test/helpers.ts`](test/helpers.ts):
 
 ```console
 $ npx skill-guard
-skill-guard 0.2.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
+skill-guard 0.3.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
 
 ✖ CRITICAL  Claude Code hook  PostToolUse [*] from helpful-tools  ~/.claude/…/helpful-tools/hooks/hooks.json
    SG202  Known exfiltration endpoint — References discord.com/api/webhooks, a service commonly
@@ -138,7 +138,7 @@ DeepSeek Harness
 | `bin` | Bundles compiled executables |
 | `creds` | Reads credential files or the whole environment |
 
-`--json` includes the same `capabilities` array for every item.
+`--json` includes the same `capabilities` array for every item. `--can` works with `scan` too (`skill-guard scan --can auto` reports only on things that run by themselves), and `--md` reports open with a one-line summary such as *"2 run automatically · 1 talks to the network"* — handy in a PR comment.
 
 ## Get told when something changes
 
@@ -193,7 +193,7 @@ Findings then appear in the repository's **Security → Code scanning** tab and 
 | `skill-guard explain <rule>` | Why a rule matters and how to fix it |
 | `skill-guard rules` | All rules |
 
-Options: `--host claude,codex,cursor,opencode,deepseek,desktop,vscode,agents` · `--can code,auto,net,write,shell,bin,creds` (list) · `--min <level>` (default `medium`) · `--fail-on <level>` (default `high`, or `none`) · `--json` · `--sarif <file>` · `--md` · `--config <file>` · `--lock <file>` · `-v` · `--no-color`.
+Options: `--host claude,codex,cursor,opencode,deepseek,desktop,vscode,agents` · `--can code,auto,net,write,shell,bin,creds` · `--min <level>` (default `medium`) · `--fail-on <level>` (default `high`, or `none`) · `--json` · `--sarif <file>` · `--md` · `--config <file>` · `--lock <file>` · `-v` · `--no-color`.
 
 Exit codes: `0` clean, `1` findings at or above `--fail-on`, `2` usage error.
 

@@ -8,32 +8,42 @@ skill-guard is a scanner people will trust with security decisions, so two thing
 npm install                 # dev dependencies only
 npm run dev -- scan ./path  # run from source (Node runs .ts directly)
 npm test
-npm run check               # type-check + tests
+npm run check               # type-check (src, tests, scripts) + tests
 node scripts/gen-rules.ts   # regenerate docs/RULES.md after changing rules
+npm run corpus              # precision regression on public skill repos (needs network once)
 ```
 
 ## Layout
 
 ```
 src/
-  discover.ts   where each agent keeps skills, plugins, hooks, MCP configs → Item[]
-  parse.ts      frontmatter, JSONC and TOML (no dependencies)
-  rules.ts      the rule catalog and detectors
-  scan.ts       splits items into text units, runs rules, suppressions, de-duplication
-  unicode.ts    invisible-character detection and decoding
-  lock.ts       pinning and diff
-  report.ts     terminal, JSON, SARIF, Markdown
+  discover.ts        where each agent keeps skills, plugins, hooks, MCP configs → Item[]
+  parse.ts           frontmatter, JSONC and TOML (no dependencies)
+  scan.ts            splits items into text units, runs rules, suppressions, de-duplication
+  rules.ts           re-exports everything below
+  rules/catalog.ts   rule ids, severities, why and fix (docs/RULES.md is generated from it)
+  rules/context.ts   how surroundings (docs, tests, warnings, quotes, fences) change severity
+  rules/patterns.ts  the regular expressions
+  rules/text.ts      rules over instructions, code and commands
+  rules/mcp.ts       MCP server definitions
+  rules/structure.ts hooks, package.json scripts, skill metadata, bundled binaries
+  capabilities.ts    what an item can do (auto, code, net, write, shell, bin, creds)
+  unicode.ts         invisible-character detection and decoding
+  lock.ts            pinning and diff
+  report.ts          terminal, JSON, SARIF, Markdown
 test/
-  helpers.ts    a fake home directory full of synthetic attacks
+  helpers.ts         a fake home directory full of synthetic attacks
+scripts/
+  corpus.ts          clones pinned public skill repos (read-only) and compares with corpus.json
 ```
 
 ## Adding or changing a rule
 
-1. Add the rule to `RULES` in `src/rules.ts` with a clear `why` and `fix`.
-2. Add a detector. Use `contextual()` so severity is lowered for documentation, tests, fenced examples, quoted mentions and warnings.
+1. Add the rule to `RULES` in `src/rules/catalog.ts` with a clear `why` and `fix`.
+2. Add a detector (usually in `src/rules/text.ts`, pattern in `patterns.ts`). Use `contextual()` so severity is lowered for documentation, tests, fenced examples, quoted mentions and warnings.
 3. Add a **positive** fixture to `test/helpers.ts` and an assertion in `test/detect.test.ts`.
 4. Add a **negative** case: the most plausible legitimate text that looks similar (e.g. a security skill that *warns* about the pattern).
-5. Run the scanner on your own machine (`npm run dev`) and check the rule does not fire on the skills and plugins you have installed. Precision regressions are bugs.
+5. Run the scanner on your own machine (`npm run dev`) and `npm run corpus`, and check the rule does not fire on legitimate skills. Precision regressions are bugs. If the corpus diff is intended (a new true positive), read every changed line, then `node scripts/corpus.ts --update`.
 6. Regenerate `docs/RULES.md`.
 
 Never commit real skills, configs or credentials as fixtures — write synthetic ones.

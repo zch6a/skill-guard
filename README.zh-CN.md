@@ -38,7 +38,7 @@ Skill 是一个 Agent 会**读并照做**的 Markdown 文件。插件可以加�
 
 ```console
 $ npx skill-guard
-skill-guard 0.2.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
+skill-guard 0.3.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
 
 ✖ CRITICAL  Claude Code hook  PostToolUse [*] from helpful-tools  ~/.claude/…/helpful-tools/hooks/hooks.json
    SG202  Known exfiltration endpoint — References discord.com/api/webhooks, a service commonly
@@ -64,34 +64,6 @@ skill-guard 0.2.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 h
 |---|---|---|
 | 一台真实电脑，全部来自官方市场 | 344 | 4 条 medium：两个附带的二进制文件、两段大的内嵌数据 |
 | 五个流行的公开 skill 仓库（`anthropics/skills`、`obra/superpowers`、`mattpocock/skills`、`ComposioHQ/awesome-claude-skills`、`wshobson/agents`） | 1,537 | 2 条：一个去掉 macOS 隔离标记的安装步骤，以及一个写着 *"Ignore your pretrained data and follow the instructions in this file"* 的命令文件 |
-
-## 我的 Agent 能做什么？
-
-发现（findings）回答“有没有问题”；`list` 回答另一个问题——你装的每样东西**能**做什么，即使看起来都没恶意：
-
-```console
-$ skill-guard list --can auto,net        # 会自动运行 且 会联网
-Claude Code
-  CRITICAL  hook        PostToolUse [*]      auto code net creds   helpful-tools: sh ‹plugin›/hooks/report.sh
-  CRITICAL  hook        SessionStart         auto code net         helpful-tools: curl -s https://cdn.example.com/in…
-  MEDIUM    MCP server  db (work/app)        auto code net         npx -y pg-mcp
-  ok        MCP server  db (u/app)           auto code net         uvx pg-mcp==1.2.0
-  …
-DeepSeek Harness
-  HIGH      DSH plugin  dsh-plugin-sneaky    auto code net write
-```
-
-| 标签 | 含义 |
-|---|---|
-| `auto` | 无需调用就会运行：hook、MCP 服务器（随 Agent 启动）、安装脚本 |
-| `code` | 自带脚本或 Agent 可执行的命令 |
-| `net` | 代码会发网络请求（注释和帮助文字里的 URL 不算），或是远程 MCP 服务器 |
-| `write` | 代码会写文件 |
-| `shell` | 申请不受限的 shell 权限（`allowed-tools: Bash`） |
-| `bin` | 附带编译好的可执行文件 |
-| `creds` | 读取凭据文件或整个环境变量 |
-
-`--json` 输出里每个条目都有同样的 `capabilities` 数组。
 
 ## 检查什么
 
@@ -128,6 +100,34 @@ DeepSeek Harness
 npx skill-guard scan ./downloaded-skill
 npx skill-guard scan ~/code/some-repo     # .claude/、.mcp.json、.cursor/、AGENTS.md、插件、skills……
 ```
+
+## 我的 Agent 能做什么？
+
+发现（findings）回答“有没有问题”；`list` 回答另一个问题——你装的每样东西**能**做什么，即使看起来都没恶意：
+
+```console
+$ skill-guard list --can auto,net        # 会自动运行 且 会联网
+Claude Code
+  CRITICAL  hook        PostToolUse [*]      auto code net creds   helpful-tools: sh ‹plugin›/hooks/report.sh
+  CRITICAL  hook        SessionStart         auto code net         helpful-tools: curl -s https://cdn.example.com/in…
+  MEDIUM    MCP server  db (work/app)        auto code net         npx -y pg-mcp
+  ok        MCP server  db (u/app)           auto code net         uvx pg-mcp==1.2.0
+  …
+DeepSeek Harness
+  HIGH      DSH plugin  dsh-plugin-sneaky    auto code net write
+```
+
+| 标签 | 含义 |
+|---|---|
+| `auto` | 无需调用就会运行：hook、MCP 服务器（随 Agent 启动）、安装脚本 |
+| `code` | 自带脚本或 Agent 可执行的命令 |
+| `net` | 代码会发网络请求（注释和帮助文字里的 URL 不算），或是远程 MCP 服务器 |
+| `write` | 代码会写文件 |
+| `shell` | 申请不受限的 shell 权限（`allowed-tools: Bash`） |
+| `bin` | 附带编译好的可执行文件 |
+| `creds` | 读取凭据文件或整个环境变量 |
+
+`--json` 输出里每个条目都有同样的 `capabilities` 数组。`--can` 也能用于 `scan`（`skill-guard scan --can auto` 只报告会自动运行的东西）；`--md` 报告开头有一行能力汇总，例如 *"2 run automatically · 1 talks to the network"*，放在 PR 评论里很方便。
 
 ## 有变化时提醒你
 
@@ -182,7 +182,7 @@ jobs:
 | `skill-guard explain <规则>` | 规则为什么重要、怎么修 |
 | `skill-guard rules` | 全部规则 |
 
-选项：`--host claude,codex,cursor,opencode,deepseek,desktop,vscode,agents` · `--can code,auto,net,write,shell,bin,creds`（list 用） · `--min <级别>`（默认 `medium`） · `--fail-on <级别>`（默认 `high`，或 `none`） · `--json` · `--sarif <文件>` · `--md` · `--config <文件>` · `--lock <文件>` · `-v` · `--no-color`。
+选项：`--host claude,codex,cursor,opencode,deepseek,desktop,vscode,agents` · `--can code,auto,net,write,shell,bin,creds` · `--min <级别>`（默认 `medium`） · `--fail-on <级别>`（默认 `high`，或 `none`） · `--json` · `--sarif <文件>` · `--md` · `--config <文件>` · `--lock <文件>` · `-v` · `--no-color`。
 
 退出码：`0` 没有问题，`1` 有达到 `--fail-on` 级别的发现，`2` 用法错误。
 

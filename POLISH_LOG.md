@@ -40,10 +40,28 @@ Backlog from v0.1.0:
 
 Also: removed a dead `changes.length ? 0 : 0` in `diff`. 45 tests (was 38).
 
-## Round 2 — backlog
+## Round 2 — v0.3.0 (2026-11-11)
 
-- [ ] Read-through of `rules.ts` as a whole: it is ~500 lines; consider splitting patterns from rule functions.
-- [ ] Corpus regression script in `scripts/` (clone list + expected counts) so precision is re-measured each round, without committing third-party content.
-- [ ] Markdown/SARIF: include capabilities? (SARIF has no natural place; Markdown inventory could.)
-- [ ] README zh-CN: section order differs slightly from English (capabilities section placement).
-- [ ] `--can` on `scan` (only report findings for items with a capability)?
+Backlog from round 1:
+
+- [x] **Corpus regression** (`scripts/corpus.ts` + `corpus.json`): five public repos pinned to commit SHAs, fetched with `git fetch --depth 1 origin <sha>` into a cache outside the repo, with hooks disabled and symlinks off; the baseline is the exact list of medium+ findings (`SG502 skills/…/anthropic-cli.md:21`) plus item counts, so a new false positive *and* a lost detection both fail. Verified from an empty cache (32 s) and in check/`--update` modes. Added as a separate CI job with a cache keyed on `corpus.json`.
+- [x] **`rules.ts` read-through and split** into catalog / context / patterns / text / mcp / structure (largest file now 189 lines), done mechanically by line range so the bodies are byte-identical; `rules.ts` re-exports, no import paths changed. Found while reading: an always-true `if (prose || code || command)` wrapping half of `scanUnit` (every unit kind is one of those) — unwrapped; a dead `${auto ? '' : ''}` in SG701 — removed; `capabilities.ts` had its own copy of `SHELL_FILE` — now shared.
+- [x] **Markdown**: capability summary line; hooks named by event/plugin via a shared `displayName()` (terminal, list and Markdown had three slightly different versions). SARIF left as is — no natural place for capabilities.
+- [x] **zh-CN README** section order now matches English.
+- [x] **`--can` on `scan`**, with a clear message when the filter matches nothing ("None of the 4 items found has all of: binaries") instead of the misleading "nothing an agent would load was found here".
+
+Beyond the backlog:
+
+- **Performance.** `scan` took 4.2 s on this machine. A CPU profile showed 38% in `open` and 8% in `readdir`, not in the regexes; counting calls found hook scripts read up to 6×, one `package.json` stat'ed 41×, 2,879 `readdir` calls on 1,002 folders. Fixes: a *scoped* fs cache (`withFsCache`: one consistent view per command, discarded afterwards — a global cache would break tests that edit files between scans), scanning each shared file once per kind and attributing findings to every item, and parallel prefetch of all files after discovery (benchmark: 1,594 files sync 1.25 s vs 16-way async 0.33 s). Now 2.5 s; the remainder is regex CPU time. Findings diffed against v0.2.0: 74 = 74, identical.
+- **Engineering.** `typecheck` only covered `src/`; now `tsconfig.check.json` covers src, test and scripts (they were already clean).
+- **Self-check that actually checks.** The CI self-scan finds 0 items in this repo, so it guarded nothing. While writing a test, the editor decoded a `﻿` escape into a real BOM in the middle of `core.test.ts` — exactly the kind of invisible character this tool exists to catch. Added a test that runs `findHidden` over all sources and docs (verified it fails on a planted BOM).
+- Folder scans with no items said "(nothing installed)"; now "(nothing found)".
+
+48 tests (was 45). Corpus: matches baseline. This machine: unchanged (4 medium).
+
+## Round 3 — backlog
+
+- [ ] Recall corpus: a set of *synthetic* malicious skills modelled on published 2026 attack write-ups (ToxicSkills, Skill-Inject, MCP tool poisoning) as fixtures, measured like the precision corpus.
+- [ ] Regex CPU time (~1.2 s): pre-filter units with a cheap combined keyword test before running every pattern.
+- [ ] `diff`: show capability changes ("now also: net") — a plugin update that starts talking to the network is the interesting part.
+- [ ] Docs: a short "How to read a finding" section (severity, context downgrades, when to suppress).

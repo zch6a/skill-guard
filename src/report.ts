@@ -77,7 +77,7 @@ export function renderTerminal(result: ScanResult, opts: TerminalOptions): strin
   }
   const itemsById = new Map(items.map((i) => [i.id, i]));
   const risk = itemRisk(shown);
-  out.push(`${c.bold('skill-guard')} ${c.dim(VERSION)} ${c.dim('·')} ${opts.title ?? 'scanned'} ${plural(items.length, 'item')} ${c.dim(`(${inventoryLine(items) || 'nothing installed'}) in ${(opts.elapsedMs / 1000).toFixed(1)}s`)}`);
+  out.push(`${c.bold('skill-guard')} ${c.dim(VERSION)} ${c.dim('·')} ${opts.title ?? 'scanned'} ${plural(items.length, 'item')} ${c.dim(`(${inventoryLine(items) || 'nothing found'}) in ${(opts.elapsedMs / 1000).toFixed(1)}s`)}`);
   out.push('');
   const ordered = [...byItem.keys()].sort((a, b) => SEVERITY_ORDER[risk.get(b)!] - SEVERITY_ORDER[risk.get(a)!] || a.localeCompare(b));
   const cols = process.stdout.columns || 110;
@@ -85,10 +85,7 @@ export function renderTerminal(result: ScanResult, opts: TerminalOptions): strin
     const item = itemsById.get(id);
     if (!item) continue;
     const sev = risk.get(id)!;
-    // Hooks are named by their command, which the evidence line shows anyway: head with event and owner instead.
-    const name = item.hook ? `${item.hook.event}${item.hook.matcher ? ` [${item.hook.matcher}]` : ''}` : item.name;
-    const owner = item.parent ? itemsById.get(item.parent)?.name : undefined;
-    const head = `${sevColor(sev)(`${SEV_ICON[sev]} ${SEV_LABEL[sev]}`)}  ${c.dim(HOST_LABELS[item.host])} ${KIND_LABEL[item.kind]}  ${c.bold(fit(name, 60))}${owner ? c.dim(` from ${owner}`) : ''}`;
+    const head = `${sevColor(sev)(`${SEV_ICON[sev]} ${SEV_LABEL[sev]}`)}  ${c.dim(HOST_LABELS[item.host])} ${KIND_LABEL[item.kind]}  ${c.bold(fit(displayName(item, itemsById), 70))}`;
     out.push(`${head}  ${c.dim(fitPath(tildify(item.path), Math.max(24, cols - width(head) - 4)))}`);
     const list = byItem.get(id)!.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity]);
     const limit = opts.verbose ? Infinity : 4;
@@ -114,6 +111,35 @@ export function renderTerminal(result: ScanResult, opts: TerminalOptions): strin
   }
   if (result.skipped.length && opts.verbose) out.push(c.dim(`Skipped ${plural(result.skipped.length, 'file')}: ${result.skipped.slice(0, 5).map((s) => `${tildify(s.file)} (${s.reason})`).join(', ')}`));
   return out.join('\n');
+}
+
+/**
+ * How an item is named in reports. Hooks are stored under their command; the command is
+ * already on the evidence line, so they are named by event, matcher and owning plugin.
+ */
+export function displayName(item: Item, byId?: Map<string, Item>): string {
+  if (!item.hook) return item.name;
+  const owner = item.parent ? byId?.get(item.parent)?.name : undefined;
+  return `${item.hook.event}${item.hook.matcher ? ` [${item.hook.matcher}]` : ''}${owner ? ` from ${owner}` : ''}`;
+}
+
+/** "3 run automatically · 2 talk to the network · 1 reads credentials", or '' when nothing can do anything. */
+export function capabilitySummary(result: ScanResult): string {
+  const PHRASE: Record<Capability, [string, string]> = {
+    'auto-runs': ['runs automatically', 'run automatically'],
+    'runs-code': ['ships code', 'ship code'],
+    network: ['talks to the network', 'talk to the network'],
+    'writes-files': ['writes files', 'write files'],
+    shell: ['has unrestricted shell access', 'have unrestricted shell access'],
+    binaries: ['bundles binaries', 'bundle binaries'],
+    credentials: ['reads credentials', 'read credentials'],
+  };
+  const parts: string[] = [];
+  for (const cap of Object.keys(PHRASE) as Capability[]) {
+    const n = result.items.filter((i) => result.capabilities?.[i.id]?.includes(cap)).length;
+    if (n) parts.push(`${n} ${PHRASE[cap][n === 1 ? 0 : 1]}`);
+  }
+  return parts.join(' · ');
 }
 
 /** Shorten a path in the middle so both the root (`~/.claude`) and the file name survive. */
@@ -163,7 +189,8 @@ export function renderInventory(result: ScanResult, only?: Set<string>): string 
     for (const cap of caps) used.add(cap);
     const capText = caps.map((cap) => (cap === 'auto-runs' || cap === 'credentials' ? c.yellow(CAPABILITY_LABEL[cap]) : CAPABILITY_LABEL[cap])).join(' ');
     const detail = i.hook ? hookDetail(i, byId) : i.mcp ? fit(i.mcp.url ?? [i.mcp.command ?? '', ...i.mcp.args].join(' '), 50) : fit((i.description ?? '').replace(/\s+/g, ' ').trim(), 50);
-    const name = i.hook ? `${i.hook.event}${i.hook.matcher ? ` [${i.hook.matcher}]` : ''}` : i.name;
+    // The owning plugin is already in the detail column for hooks.
+    const name = i.hook ? displayName({ ...i, parent: undefined }) : i.name;
     out.push(`  ${pad(flag, 9)} ${pad(KIND_LABEL[i.kind], 12)} ${pad(fit(name, 36), 36)} ${pad(capText, 24)} ${c.dim(detail)}`);
   }
   if (used.size) {
@@ -264,6 +291,8 @@ export function toMarkdown(result: ScanResult, min: Severity): string {
   const items = new Map(result.items.map((i) => [i.id, i]));
   const out = [`## skill-guard`, '', `Scanned ${plural(result.items.length, 'item')} (${inventoryLine(result.items) || 'none'}).`, ''];
   out.push(`| Critical | High | Medium | Low |`, `|---:|---:|---:|---:|`, `| ${n.critical} | ${n.high} | ${n.medium} | ${n.low} |`, '');
+  const caps = capabilitySummary(result);
+  if (caps) out.push(`**What they can do:** ${caps}`, '');
   if (!shown.length) {
     out.push(`✅ No ${min}+ findings.`);
     return out.join('\n');
@@ -273,7 +302,7 @@ export function toMarkdown(result: ScanResult, min: Severity): string {
     const item = items.get(f.item);
     const loc = f.file && item ? `\`${shortFile(item, f.file)}${f.line ? `:${f.line}` : ''}\`` : '';
     const esc = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
-    out.push(`| ${f.severity} | ${f.rule} ${esc(f.title)} | ${esc(item ? `${KIND_LABEL[item.kind]} ${item.name}` : f.item)} | ${loc} | ${esc(f.message)} |`);
+    out.push(`| ${f.severity} | ${f.rule} ${esc(f.title)} | ${esc(item ? `${KIND_LABEL[item.kind]} ${displayName(item, items)}` : f.item)} | ${loc} | ${esc(f.message)} |`);
   }
   if (shown.length > 200) out.push('', `…and ${shown.length - 200} more.`);
   return out.join('\n');

@@ -1,0 +1,119 @@
+/** Shared machinery for text rules: where a match sits decides how loud it is. */
+import type { Finding, Severity, TextUnit, UnitKind } from '../types.ts';
+import { RULE_BY_ID } from './catalog.ts';
+import { lineAt, lineCol, maskSecrets } from '../util.ts';
+
+const DOWN: Record<Severity, Severity> = { critical: 'high', high: 'medium', medium: 'low', low: 'info', info: 'info' };
+export const lower = (s: Severity, steps = 1): Severity => (steps <= 0 ? s : lower(DOWN[s], steps - 1));
+
+/** Words that mean the text is warning *against* the thing it mentions. */
+const NEGATION = /\b(never|not|don'?t|do not|must not|mustn'?t|should not|shouldn'?t|avoid|refuse|prevent|block(?:s|ed)?|detect(?:s|ed|ion)?|flag(?:s|ged)?|warn(?:s|ing)?|forbid(?:den)?|disallow(?:ed)?|prohibit(?:ed)?|without asking first|unless)\b|禁止|不要|切勿|不得|不能|避免/i;
+
+function negated(text: string, index: number): boolean {
+  const start = Math.max(0, text.lastIndexOf('\n', index - 1) + 1, index - 120);
+  return NEGATION.test(text.slice(start, index));
+}
+
+/** "never run …", "do not execute …" earlier in the same line: the sentence forbids running what follows. */
+function forbidsRunning(text: string, index: number): boolean {
+  const start = Math.max(0, text.lastIndexOf('\n', index - 1) + 1, index - 120);
+  return /\b(never|do not|don'?t|must not|should not|shouldn'?t)\s+(run|execute|pipe|paste|copy|use|follow)\b(?![^`]*\b(just|instead|then)\b)/i.test(text.slice(start, index));
+}
+
+/** The match sits inside quotes — the text is *talking about* the phrase (e.g. warning about it), not saying it. */
+function quoted(text: string, index: number, length: number): boolean {
+  const before = text.slice(Math.max(0, index - 3), index);
+  const after = text.slice(index + length, index + length + 40);
+  return /["“'`‘「(]\s*$/.test(before) || (/["“`‘「]/.test(text.slice(Math.max(0, index - 40), index)) && /^[^"”`’」\n]{0,40}["”`’」]/.test(after));
+}
+
+/** Test suites and fixtures are full of attack strings on purpose; they are not what the agent runs. */
+export function isTestPath(file: string | undefined): boolean {
+  if (!file) return false;
+  return /[\\/](tests?|__tests__|spec|specs|fixtures?|testdata|test-data|__fixtures__|e2e)[\\/]|\.(test|spec)\.[a-z]+$|(^|[\\/])test_[^\\/]+\.py$|_test\.(py|go)$/i.test(file);
+}
+
+/**
+ * In code: the match is in a comment, a docstring or a backtick-quoted span of
+ * prose — documentation about the thing, not the thing.
+ */
+function commentish(text: string, index: number, length: number, file = ''): boolean {
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1;
+  const head = text.slice(lineStart, index);
+  if (/^\s*(#|\/\/|\*|\/\*|--\s|REM\s|;)/i.test(head) || /\s(#|\/\/)\s/.test(head)) return true;
+  // Backticks are Markdown-in-docstrings in Python/shell — but real template strings in JS/TS.
+  const jsLike = /\.(m?[jt]sx?|cjs|cts|mts)$/i.test(file);
+  if (!jsLike && /`[^`]*$/.test(head) && /^[^`\n]*`/.test(text.slice(index + length))) return true;
+  const before = text.slice(0, index);
+  return ((before.match(/"""|'''/g) ?? []).length & 1) === 1;
+}
+
+export const SHELL_FILE = /\.(sh|bash|zsh|fish|ps1|psm1|bat|cmd)$/i;
+
+export const IMPERATIVE_NEAR = /\b(use|run|set|enable|add|pass|launch|start|always|turn on|switch to|configure|with|invoke|call|execute|append)\b|使用|开启|设置|加上/i;
+
+/** Inside a fenced code block in Markdown: an example, not a directive (but still code the model may run). */
+export function inFence(text: string, index: number): boolean {
+  const before = text.slice(0, index);
+  return ((before.match(/^\s*```/gm) ?? []).length & 1) === 1;
+}
+
+export interface Ctx {
+  unit: TextUnit;
+  out: Finding[];
+}
+
+export function emit(ctx: Ctx, ruleId: string, index: number, severity: Severity, message: string, evidence?: string): void {
+  const rule = RULE_BY_ID.get(ruleId);
+  if (!rule) return;
+  const { unit } = ctx;
+  const pos = lineCol(unit.text, index);
+  const f: Finding = {
+    rule: ruleId,
+    severity,
+    title: rule.title,
+    message,
+    item: unit.item.id,
+    evidence: maskSecrets(evidence ?? lineAt(unit.text, index)),
+  };
+  // A hook or MCP command string is not a file region; a line number would point at the wrong place.
+  if (unit.kind !== 'command') {
+    f.line = pos.line + (unit.lineOffset ?? 1) - 1;
+    f.column = pos.column;
+  }
+  if (unit.file) f.file = unit.file;
+  ctx.out.push(f);
+}
+
+/**
+ * Base severity of a rule adjusted for where the text is: lower in docs, test
+ * files, fenced examples, quoted mentions and sentences phrased as warnings.
+ */
+export function contextual(ruleId: string, ctx: Ctx, index: number, perKind: Partial<Record<UnitKind, number>> = {}, length = 0, quotes = true): Severity | null {
+  const rule = RULE_BY_ID.get(ruleId);
+  if (!rule) return null;
+  const { unit } = ctx;
+  let sev = lower(rule.severity, perKind[unit.kind] ?? 0);
+  const prose = unit.kind === 'instructions' || unit.kind === 'docs' || unit.kind === 'metadata';
+  if (prose && negated(unit.text, index)) sev = lower(sev, 2);
+  // "`X` does not mean ...", "`X` is not allowed": explaining the thing, not asking for it.
+  if (prose && /^[`"'\s)]{0,4}(does not|doesn'?t|is not|isn'?t|won'?t|will not|should not|must not|cannot|can'?t)\b/i.test(unit.text.slice(index + length, index + length + 60))) sev = lower(sev, 2);
+  // Command rules skip the quoted downgrade (a backticked command is still a command) — unless a
+  // negation directly governs running it: "Never run `curl … | sh`".
+  if (prose && length && quoted(unit.text, index, length) && (quotes || forbidsRunning(unit.text, index))) sev = lower(sev, 2);
+  if (prose && inFence(unit.text, index)) sev = lower(sev, 1);
+  if (unit.kind === 'code' && commentish(unit.text, index, length, unit.file)) sev = lower(sev, 2);
+  if (isTestPath(unit.file)) sev = lower(sev, 2);
+  return sev;
+}
+
+export function eachMatch(text: string, re: RegExp, fn: (m: RegExpExecArray) => void, limit = 5): void {
+  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  let m: RegExpExecArray | null;
+  let n = 0;
+  while ((m = g.exec(text)) && n < limit) {
+    fn(m);
+    n++;
+    if (m[0] === '') g.lastIndex++;
+  }
+}

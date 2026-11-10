@@ -3,7 +3,7 @@
  * "this skill ships code that talks to the network and writes files".
  * Shown by `skill-guard list` and included in JSON output.
  */
-import { isTestPath } from './rules.ts';
+import { SHELL_FILE, isTestPath } from './rules/context.ts';
 import type { Capability, Finding, Item, TextUnit } from './types.ts';
 
 export const CAPABILITY_LABEL: Record<Capability, string> = {
@@ -44,8 +44,6 @@ export function makesNetworkCalls(text: string, shell: boolean): boolean {
 /** File writes in code. Shell redirection only counts in shell context, where `>` is not a comparison. */
 const WRITE_CODE = /\b(writeFile(Sync)?|appendFile(Sync)?|createWriteStream|copyFile(Sync)?|rename(Sync)?|unlink(Sync)?|rmSync|mkdirSync)\s*\(|\bopen\s*\([^)\n]*,\s*['"](w|a|x|r\+)b?\+?['"]|\.write_(text|bytes)\s*\(|\bshutil\.(copy\w*|move|rmtree)\s*\(|\bos\.(remove|rename|replace|makedirs|unlink)\s*\(|\b(Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Remove-Item|New-Item)\b|\bsed\s+-i\b|\btee\s/;
 const WRITE_SHELL = /(^|[^<>=!\-0-9])>>?\s*["']?(?!&|\/dev\/null|NUL\b|\$null)[~$\w./\\-]|(?<![\w-])(cp|mv|rm|mkdir|touch)\s+-?\w/m;
-
-const SHELL_FILE = /\.(sh|bash|zsh|fish|ps1|psm1|bat|cmd)$/i;
 
 /** Comments and docstrings, removed so documentation does not count as behaviour. */
 export function stripComments(text: string): string {

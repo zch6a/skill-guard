@@ -12,7 +12,7 @@ import { fitPath, toSarif } from '../src/report.ts';
 import { RULES, splitPackage } from '../src/rules.ts';
 import { scanItems } from '../src/scan.ts';
 import { findHidden, reveal, stripHidden } from '../src/unicode.ts';
-import { maskSecrets } from '../src/util.ts';
+import { maskSecrets, prefetch, readText, walkFiles, withFsCache, withFsCacheAsync } from '../src/util.ts';
 import { VERSION } from '../src/version.ts';
 import { toTags } from './helpers.ts';
 
@@ -188,6 +188,51 @@ describe('SARIF', () => {
   });
 });
 
+describe('own sources', () => {
+  it('contain no invisible characters (tests spell them as escapes)', () => {
+    const repo = fileURLToPath(new URL('..', import.meta.url));
+    const files = ['src', 'test', 'scripts', 'docs'].flatMap((d) => walkFiles(join(repo, d))).concat(['README.md', 'README.zh-CN.md', 'CONTRIBUTING.md', 'CHANGELOG.md'].map((f) => join(repo, f)));
+    const dirty = files.filter((f) => {
+      const r = readText(f);
+      return 'text' in r && findHidden(r.text).length > 0;
+    });
+    assert.deepEqual(dirty, []);
+    assert.ok(files.length > 20);
+  });
+});
+
+describe('filesystem cache', () => {
+  it('caches only inside its scope', () => {
+    const root = tmp();
+    try {
+      const f = put(root, 'a.md', 'one');
+      withFsCache(() => {
+        assert.deepEqual(readText(f), { text: 'one' });
+        writeFileSync(f, 'two');
+        assert.deepEqual(readText(f), { text: 'one' }, 'one consistent view within a scan');
+      });
+      assert.deepEqual(readText(f), { text: 'two' }, 'the next scan sees the change');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('prefetch gives exactly what readText gives', async () => {
+    const root = tmp();
+    try {
+      const files = [put(root, 'a.md', 'plain'), put(root, 'b.bin', 'x\u0000y'), put(root, 'c.md', '\uFEFFbom'), join(root, 'missing.md')];
+      const direct = files.map((f) => readText(f));
+      const prefetched = await withFsCacheAsync(async () => {
+        await prefetch(files);
+        return files.map((f) => readText(f));
+      });
+      assert.deepEqual(prefetched, direct);
+      assert.deepEqual(direct.slice(0, 3), [{ text: 'plain' }, { skip: 'binary' }, { text: 'bom' }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('formatting', () => {
   it('shortens paths in the middle, keeping the root and the file name', () => {
     const p = '~/.claude/plugins/marketplaces/shady/plugins/helpful-tools/hooks/hooks.json';
@@ -271,6 +316,17 @@ describe('cli', () => {
       assert.deepEqual(net.items.map((i: { name: string }) => i.name), ['fetcher']);
       assert.equal((await cli(['list', root, '--can', 'auto,net', '--json'])).out.includes('"items": []'), true);
       assert.equal((await cli(['list', root, '--can', 'teleport'])).code, 2);
+      // scan --can: only findings in matching items; a filter that matches nothing says so.
+      const scanNet = JSON.parse((await cli(['scan', root, '--can', 'net', '--json', '--min', 'info'])).out);
+      assert.deepEqual(scanNet.items.map((i: { name: string }) => i.name), ['fetcher']);
+      assert.ok(scanNet.findings.every((f: { item: string }) => f.item === scanNet.items[0].id), JSON.stringify(scanNet.findings));
+      const scanAll = JSON.parse((await cli(['scan', root, '--json', '--min', 'info'])).out);
+      assert.ok(scanAll.findings.some((f: { item: string }) => f.item !== scanNet.items[0].id), 'without --can, other items have findings too');
+      assert.match((await cli(['scan', root, '--can', 'bin'])).out, /None of the \d+ items found has all of: binaries/);
+      // Markdown summarises capabilities and names hooks by event.
+      const md = (await cli(['scan', root, '--md', '--min', 'info'])).out;
+      assert.match(md, /\*\*What they can do:\*\* 1 runs automatically · 3 ship code · 1 talks to the network · 2 write files/);
+      assert.match(md, /hook Stop \|/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

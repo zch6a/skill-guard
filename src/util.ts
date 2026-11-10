@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, type Dirent, type Stats } from 'node:fs';
+import { readFile as readFileAsync, stat as statAsync } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 
@@ -6,29 +7,67 @@ export function home(): string {
   return process.env.SKILL_GUARD_HOME || homedir();
 }
 
-export function exists(path: string): boolean {
+// ---------------------------------------------------------------- scoped filesystem cache
+//
+// A scan touches the same files many times (a plugin and each of its skills walk the same
+// folders; several hooks run the same script). On Windows every open is slow, so within one
+// scan, stat/readdir/read results are cached. The cache lives only for the duration of
+// withFsCache(): files can change between scans (and do, in tests).
+
+interface FsCache {
+  stat: Map<string, Stats | null>;
+  dirs: Map<string, Dirent[] | null>;
+  texts: Map<string, { text: string } | { skip: string }>;
+}
+let fsCache: FsCache | null = null;
+
+/** Run `fn` with filesystem results cached; nested calls share the outer cache. */
+export function withFsCache<T>(fn: () => T): T {
+  if (fsCache) return fn();
+  fsCache = { stat: new Map(), dirs: new Map(), texts: new Map() };
   try {
-    statSync(path);
-    return true;
-  } catch {
-    return false;
+    return fn();
+  } finally {
+    fsCache = null;
   }
+}
+
+function stat(path: string): Stats | null {
+  const hit = fsCache?.stat.get(path);
+  if (hit !== undefined) return hit;
+  let st: Stats | null = null;
+  try {
+    st = statSync(path);
+  } catch {
+    // missing or unreadable
+  }
+  fsCache?.stat.set(path, st);
+  return st;
+}
+
+function entries(dir: string): Dirent[] | null {
+  const hit = fsCache?.dirs.get(dir);
+  if (hit !== undefined) return hit;
+  let list: Dirent[] | null = null;
+  try {
+    list = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    // missing or unreadable
+  }
+  fsCache?.dirs.set(dir, list);
+  return list;
+}
+
+export function exists(path: string): boolean {
+  return stat(path) !== null;
 }
 
 export function isDir(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
+  return stat(path)?.isDirectory() ?? false;
 }
 
 export function listDir(path: string): string[] {
-  try {
-    return readdirSync(path);
-  } catch {
-    return [];
-  }
+  return (entries(path) ?? []).map((e) => e.name);
 }
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache']);
@@ -37,13 +76,9 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv
 export function walkFiles(root: string, maxDepth = 6, maxFiles = 5000): string[] {
   const out: string[] = [];
   const visit = (dir: string, depth: number) => {
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
+    const list = entries(dir);
+    if (!list) return;
+    for (const e of list) {
       if (out.length >= maxFiles) return;
       const p = join(dir, e.name);
       if (e.isDirectory()) {
@@ -73,6 +108,14 @@ export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
 /** Read a text file; returns null (with a reason) for big or binary files. */
 export function readText(path: string): { text: string } | { skip: string } {
+  const hit = fsCache?.texts.get(path);
+  if (hit) return hit;
+  const r = readTextUncached(path);
+  fsCache?.texts.set(path, r);
+  return r;
+}
+
+function readTextUncached(path: string): { text: string } | { skip: string } {
   let size: number;
   try {
     size = statSync(path).size;
@@ -80,17 +123,56 @@ export function readText(path: string): { text: string } | { skip: string } {
     return { skip: (e as NodeJS.ErrnoException).code ?? 'unreadable' };
   }
   if (size > MAX_FILE_BYTES) return { skip: `larger than ${MAX_FILE_BYTES / 1024 / 1024} MB` };
-  let buf: Buffer;
   try {
-    buf = readFileSync(path);
+    return decodeText(readFileSync(path));
   } catch (e) {
     return { skip: (e as NodeJS.ErrnoException).code ?? 'unreadable' };
   }
+}
+
+function decodeText(buf: Buffer): { text: string } | { skip: string } {
   // NUL bytes in the first 8 KB: treat as binary.
   if (buf.subarray(0, 8192).includes(0)) return { skip: 'binary' };
   let text = buf.toString('utf8');
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   return { text };
+}
+
+/** Like withFsCache, for async work (see prefetch). */
+export async function withFsCacheAsync<T>(fn: () => Promise<T>): Promise<T> {
+  if (fsCache) return fn();
+  fsCache = { stat: new Map(), dirs: new Map(), texts: new Map() };
+  try {
+    return await fn();
+  } finally {
+    fsCache = null;
+  }
+}
+
+/**
+ * Read files into the active cache in parallel. Synchronous reads wait for each open in turn
+ * (slow on Windows with real-time scanning); overlapping them is ~4× faster on a full machine.
+ * Results are identical to readText(); outside a cache scope this does nothing.
+ */
+export async function prefetch(paths: string[], concurrency = 16): Promise<void> {
+  const cache = fsCache;
+  if (!cache) return;
+  const todo = [...new Set(paths)].filter((p) => !cache.texts.has(p));
+  let next = 0;
+  const worker = async () => {
+    while (next < todo.length) {
+      const p = todo[next++] as string;
+      let r: { text: string } | { skip: string };
+      try {
+        const st = await statAsync(p);
+        r = st.size > MAX_FILE_BYTES ? { skip: `larger than ${MAX_FILE_BYTES / 1024 / 1024} MB` } : decodeText(await readFileAsync(p));
+      } catch (e) {
+        r = { skip: (e as NodeJS.ErrnoException).code ?? 'unreadable' };
+      }
+      cache.texts.set(p, r);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, todo.length) }, worker));
 }
 
 export function readJson(path: string): unknown {

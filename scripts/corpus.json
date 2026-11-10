@@ -1,0 +1,36 @@
+[
+  {
+    "repo": "anthropics/skills",
+    "commit": "2c5958ecac7cee2b583967a2c4981d0f4a75c579",
+    "expect": [
+      "SG502 skills/claude-api/shared/anthropic-cli.md:21"
+    ],
+    "items": 20
+  },
+  {
+    "repo": "ComposioHQ/awesome-claude-skills",
+    "commit": "be2a406907dbc61b73e6827ded415c96139d13a2",
+    "expect": [
+      "SG101 connect-apps-plugin/commands/setup.md:7"
+    ],
+    "items": 866
+  },
+  {
+    "repo": "mattpocock/skills",
+    "commit": "4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+    "expect": [],
+    "items": 40
+  },
+  {
+    "repo": "obra/superpowers",
+    "commit": "22f0b463e7a5e579904dd6211a520321035526f7",
+    "expect": [],
+    "items": 17
+  },
+  {
+    "repo": "wshobson/agents",
+    "commit": "9c61ab243def98f72da12abd41cfcf5bcd91af9d",
+    "expect": [],
+    "items": 594
+  }
+]

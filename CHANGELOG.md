@@ -2,6 +2,21 @@
 
 All notable changes are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-11-11
+
+### Added
+
+- `--can` works with `scan` too: `skill-guard scan --can auto` reports only on things that run by themselves.
+- Markdown reports open with a capability summary ("2 run automatically · 1 talks to the network").
+- `npm run corpus`: a precision regression over five public skill repositories pinned to commits (read-only, nothing executed, nothing vendored), also run in CI.
+
+### Changed
+
+- About 40% faster on a full machine (344 items: 4.2 s → 2.5 s on Windows): files are read once per command and in parallel, and a file shared by several items (hooks running the same script) is scanned once. Findings are identical.
+- The rules are split into `src/rules/{catalog,context,patterns,text,mcp,structure}.ts`; `src/rules.ts` re-exports them.
+- `npm run typecheck` also checks the tests and scripts.
+- Hooks are named by event and owning plugin in Markdown reports as well.
+
 ## [0.2.0] — 2026-11-11
 
 ### Added

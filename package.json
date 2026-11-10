@@ -1,6 +1,6 @@
 {
   "name": "skill-guard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Find prompt injection, data exfiltration and hidden instructions in the Skills, plugins, hooks and MCP servers your AI agents run. Local, deterministic, zero dependencies.",
   "keywords": [
     "agent-skills",
@@ -35,7 +35,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "node src/bin.ts",
     "test": "node --test --test-reporter=spec \"test/**/*.test.ts\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "corpus": "node scripts/corpus.ts",
     "check": "npm run typecheck && npm test",
     "prepublishOnly": "npm run check && npm run build"
   },

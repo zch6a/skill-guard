@@ -29,3 +29,21 @@ jobs:
       - run: npm run build
       - name: The scanner scans itself
         run: node dist/bin.js scan . --fail-on high --no-color
+
+  corpus:
+    name: Precision on public skill repositories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/skill-guard-corpus
+          key: corpus-${{ hashFiles('scripts/corpus.json') }}
+      # Pinned commits, shallow fetch, read-only: nothing from these repositories is executed.
+      # No `npm ci` needed: Node 24 runs the TypeScript sources directly and there are no runtime deps.
+      - run: npm run corpus
+        env:
+          SKILL_GUARD_CORPUS: ${{ runner.temp }}/skill-guard-corpus
