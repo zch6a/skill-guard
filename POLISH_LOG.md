@@ -75,9 +75,20 @@ Beyond the backlog:
 
 72 tests + 2 todo (was 48).
 
-## Round 4 — backlog
+## Round 4 — v0.5.0 (2026-11-11)
 
-- [ ] Recall corpus round 2: more techniques — instructions in image alt text / SVG, prompt injection via `.cursor/rules` globs, poisoned `CLAUDE.md` in a cloned repo, malicious `postinstall` of an MCP server dependency.
-- [ ] Split-payload gap: light shell evaluation (join adjacent string literals and simple variable assignments before matching).
-- [ ] The full scan still re-reads every file for `lock` hashing (`readFileSync` in `fileHash`) — use the prefetch cache.
-- [ ] Review the 400-char bounds against real long command lines (minified one-liners) — any lost true positive in the corpora?
+- [x] **Recall corpus round 2** — six new techniques: rules-file backdoor (bidi-hidden instruction in `.cursor/rules` to add a remote script to generated HTML), output backdoor without hidden characters, invisible SVG text, image alt-text injection, poisoned `CLAUDE.md` pointing at a setup script, a local MCP server's `postinstall`. First run: 1 of 6 (alt text, already covered). Gaps were structural again: no rule for planting code in output (new SG110), SVG files counted as docs (SG104 now reads hidden-styled elements anywhere), CLAUDE.md's *referenced* scripts never scanned (now resolved from backticked commands like hook scripts), MCP servers' own package.json never read.
+- [x] **Split payload: no longer a gap.** `src/rules/shell.ts` joins quote-split words and substitutes simple assignments (line-preserving, so findings point at the right line); `curl … | sh` is then matched on the normalised text. Added a variables-extending-variables case.
+- [x] **Found while doing it — a real bypass.** The split-payload case lived in `skills/build/`, and nothing was discovered at all: `walkFiles` skipped any folder called `build`/`dist`/`.cache`. So a skill *named* `build` was invisible to `scan <repo>`, and — worse — no skill's or plugin's own `dist/` was ever scanned, which is where compiled DeepSeek Harness plugins keep their code. Fixed with two walk modes (`item`: only dependencies/VCS skipped; `repo`: build output skipped except under `skills/`, `commands/`, `agents/`, `plugins/`). Two regression cases (`skill-named-dist`, `payload-in-dist`). This machine: still 74 findings, identical; corpus baseline unchanged.
+- [x] **400-char bounds vs real data**: ran v0.3.0's unbounded patterns and the bounded ones over all 4,014 real files (35 MB, this machine + public corpus). Every pattern matched identically except one `writeVerb` hit on a very long line in an instructions file, where that pattern is not used. No lost findings.
+- [x] **Lock hashing through the cache**: the bytes read for scanning are hashed once (`fileDigest`), same algorithm, so existing locks stay valid — verified: a lock from the previous code diffed against the new code reports nothing changed, 344/344 hashes equal. `lock` 3.9 → 2.4 s, `diff` 2.4 → 1.2 s.
+- **DoS check on the new code**: shell normalisation could multiply text (`$A$A$A…` with a 400-char A over a 2 MB file → hundreds of MB). Substitution now has a 1 MB budget; added to the hostile-input test with two more shapes (hidden SVG text, output-scope loops).
+
+82 tests + 1 todo (was 72 + 2). Recall 27/28.
+
+## Round 5 — backlog
+
+- [ ] Final round for this project: read every source file top to bottom once more (it grew a lot in rounds 3–4: tooldesc, shell, capabilities), tighten names and comments.
+- [ ] Run the whole corpus + machine + recall + hostile tests on Node 22.15 (the minimum in `engines`) as well as 24.
+- [ ] README: re-check every claim against the current behaviour (numbers, examples, commands), both languages.
+- [ ] Decide on 1.0.0: stable rule IDs, JSON/SARIF shape, lock format — document the compatibility promise.

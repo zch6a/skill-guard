@@ -1,4 +1,4 @@
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { parseFrontmatter } from './parse.ts';
 import { RULE_BY_ID, isBinaryAsset, scanHook, scanMcp, scanPackageJson, scanSkillMeta, scanUnit } from './rules.ts';
 import { capabilitiesOf } from './capabilities.ts';
@@ -61,10 +61,29 @@ function unitsFor(item: Item, skipped: ScanResult['skipped']): TextUnit[] {
   return units;
 }
 
+/** The closest package.json from `dir` up to (and including) `stop`; none if `dir` is not under `stop`. */
+function nearestPackageJson(dir: string, stop: string): string | undefined {
+  const rel = relative(stop, dir);
+  if (rel.startsWith('..') || isAbsolute(rel)) return undefined;
+  for (let d = dir; ; d = dirname(d)) {
+    const pj = join(d, 'package.json');
+    if (exists(pj)) return pj;
+    if (d === stop || dirname(d) === d) return undefined;
+  }
+}
+
 /** Item-level checks that look at structure rather than text. */
 function structural(item: Item): Finding[] {
   const out: Finding[] = [];
-  if (item.kind === 'mcp-server') out.push(...scanMcp(item));
+  if (item.kind === 'mcp-server') {
+    out.push(...scanMcp(item));
+    // A local server's package.json: its install scripts run when you `npm install` it.
+    const stop = dirname(item.path);
+    for (const pj of new Set(item.files.map((f) => nearestPackageJson(dirname(f), stop)).filter((p): p is string => !!p))) {
+      const pkg = readJson(pj);
+      if (isObject(pkg)) out.push(...scanPackageJson(item, pj, pkg));
+    }
+  }
   if (item.kind === 'hook') out.push(...scanHook(item));
   if (item.kind === 'skill') {
     const md = ['SKILL.md', 'skill.md', 'Skill.md'].map((n) => join(item.path, n)).find(exists) ?? join(item.path, 'SKILL.md');

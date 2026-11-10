@@ -55,13 +55,13 @@ Unicode Tag characters, bidirectional overrides and runs of zero-width character
 
 **Fix:** Delete the characters (`skill-guard` shows where they are and what hidden text they spell). Treat the item as hostile until you know why they are there.
 
-### SG104 — Hidden comment with instructions
+### SG104 — Hidden text with instructions
 
 **Default severity:** medium
 
-HTML comments do not render in Markdown previews, so instructions inside them are seen by the model but not by a human skimming the skill.
+HTML comments, and SVG/HTML text styled to be invisible (zero font size, zero opacity, `display: none`), do not show when rendered — so instructions inside them are seen by the model but not by a human looking at the skill or image.
 
-**Fix:** Move the text out of the comment so reviewers can see it, or delete it.
+**Fix:** Move the text where reviewers can see it, or delete it.
 
 ### SG105 — Trigger hijacking
 
@@ -94,6 +94,14 @@ Fake `<system>` blocks, "[SYSTEM]" markers or claims of being an official Anthro
 Instructions or commands that disable permission prompts or the sandbox (`--dangerously-skip-permissions`, `bypassPermissions`, `danger-full-access`, YOLO mode, a PreToolUse hook that answers "allow") remove the last check between the model and your machine.
 
 **Fix:** Keep approvals on. Grant specific permissions instead of disabling them all.
+
+### SG110 — Plants code in what the agent writes
+
+**Default severity:** high
+
+Instructions to add a remote script, iframe or download-and-run line to every page or file the agent produces turn your own codebase into the payload: the backdoor ships with your code, written by your agent, and looks like your work.
+
+**Fix:** Remove the instruction and search recent agent-written files for the injected line.
 
 ### SG109 — Changes how other tools behave
 

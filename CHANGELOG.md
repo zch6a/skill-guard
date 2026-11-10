@@ -2,6 +2,25 @@
 
 All notable changes are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [0.5.0] — 2026-11-11
+
+### Fixed
+
+- **A skill named `build`, `dist`, `out` … was invisible to repository scans**, and a skill's or plugin's own `dist/`/`build/` folders were never scanned (compiled DeepSeek Harness plugins live there). Build output is now skipped only when searching a repository for items, never inside an item or where the folder name is an item name.
+- Command expansion in the new shell normalisation is bounded, so a crafted script cannot blow up memory.
+
+### Added
+
+- **SG110** backdoors planted in agent output ("in every page you create, include `<script src=…>`"), with the big public CDNs downgraded.
+- **SG104** now also covers invisible SVG/HTML text (zero font size, zero opacity, `display: none`).
+- `curl … | sh` assembled from string pieces and variables is detected (light shell normalisation: joined quotes, simple assignments).
+- Scripts that a `CLAUDE.md`/`AGENTS.md`/repo command tells the agent to run are scanned with it; a local MCP server's own `package.json` install scripts are checked.
+- Recall corpus: 28 cases, 27 caught (was 17 of 19).
+
+### Changed
+
+- `lock` and `diff` reuse the bytes read for scanning to compute file hashes: `lock` 3.9 s → 2.4 s, `diff` 2.4 s → 1.2 s on this machine. Hashes are unchanged, so existing lock files stay valid.
+
 ## [0.4.0] — 2026-11-11
 
 ### Added

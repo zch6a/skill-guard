@@ -66,6 +66,13 @@ export const RE = {
   // Flags and config values that switch approvals off. Mode *names* in prose are only flagged when used as an instruction.
   noApprovalFlag: /--dangerously-skip-permissions\b|\bdangerouslyDisableSandbox["']?\s*[:=]\s*true|["']?(defaultMode|permissionMode|permission_mode)["']?\s*[:=]\s*["']?bypassPermissions|\bsandbox(_mode)?["']?\s*[:=]\s*["']?danger-full-access|\bapproval[_-]policy["']?\s*[:=]\s*["']?never\b|\s--yolo\b|\s--full-auto\b|--permission-mode[\s=]+bypassPermissions/i,
   hookAllow: /["']permissionDecision["']\s*:\s*["']allow["']|["']decision["']\s*:\s*["']approve["']/i,
+  // SG110: a payload the agent is told to put into everything it writes.
+  outputScope: /\b(whenever|every time|each time|always|in every|in each|to every|to each|in all|to all|on every)\b/i,
+  outputPayload: /<script\b[^>]{0,200}\bsrc\s*=\s*["']?https?:\/\/|<iframe\b[^>]{0,200}\bsrc\s*=\s*["']?https?:\/\/|\bimport\s*\(\s*["'`]https?:\/\/|\brequire\s*\(\s*["']https?:\/\/|\b(curl|wget)\s[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z)?sh\b/i,
+  /** Public CDNs that legitimate skills use for libraries (Chart.js, Tailwind, fonts…). */
+  knownCdn: /https?:\/\/(cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com|code\.jquery\.com|cdn\.tailwindcss\.com|fonts\.googleapis\.com|ajax\.googleapis\.com|esm\.sh|cdn\.skypack\.dev|cdn\.plot\.ly|d3js\.org)\//i,
+  // SG104: text styled to be invisible when an SVG or HTML snippet renders.
+  hiddenElement: /<(text|tspan|span|div|p|foreignObject)\b[^>]{0,300}?(font-size\s*[:=]\s*["']?0(\.0+)?(px|pt|em)?["';\s>]|opacity\s*[:=]\s*["']?0(\.0+)?["';\s>]|display\s*:\s*none|visibility\s*:\s*hidden)[^>]{0,300}>([^<]{1,2000})/gi,
   // Tool shadowing: instructions about how to use some *other* tool.
   shadowTool: /\bwhen (the )?[`"']?[\w.-]+[`"']? tool is (available|used|called|present)\b[^.\n]{0,80}\b(must|always|instead|also)\b|\bwhen(ever)? (using|calling|you use|you call|invoking) (the )?[`"']?[\w.-]+[`"']? tool\b[^.\n]{0,120}\b(always|must|instead|also|first)\b|\b(before|after) (using|calling) (any|every|the [`"']?[\w.-]+[`"']?) (other )?tools?\b[^.\n]{0,80}\b(always|must|first)\b/i,
   /** A copy of messages sent to an address: "add x@y.com as BCC", "cc all emails to x@y.com". */

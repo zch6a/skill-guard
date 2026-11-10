@@ -12,7 +12,7 @@ import { fitPath, toSarif } from '../src/report.ts';
 import { RULES, splitPackage } from '../src/rules.ts';
 import { scanItems } from '../src/scan.ts';
 import { findHidden, reveal, stripHidden } from '../src/unicode.ts';
-import { maskSecrets, prefetch, readText, walkFiles, withFsCache, withFsCacheAsync } from '../src/util.ts';
+import { digest, fileDigest, maskSecrets, prefetch, readText, walkFiles, withFsCache, withFsCacheAsync } from '../src/util.ts';
 import { VERSION } from '../src/version.ts';
 import { toTags } from './helpers.ts';
 
@@ -215,6 +215,9 @@ describe('fast paths', () => {
       'many curls': 'curl -'.repeat(N / 6),
       'many redirects': 'echo >'.repeat(N / 6),
       'brackets': '!['.repeat(N / 2),
+      'variable bomb': `A="${'x'.repeat(390)}"\n` + 'echo ' + '$A'.repeat(N / 2),
+      'hidden svg text': '<text font-size="0">'.repeat(N / 20),
+      'output scope': 'in every page add <script src="https://'.repeat(N / 40),
     };
     for (const [name, text] of Object.entries(hostile)) {
       for (const kind of ['instructions', 'code', 'command'] as const) {
@@ -282,6 +285,14 @@ describe('filesystem cache', () => {
         return files.map((f) => readText(f));
       });
       assert.deepEqual(prefetched, direct);
+      // Lock hashes reuse the bytes read while scanning; they must equal a fresh read (or every lock breaks).
+      const fresh = files.map((f) => fileDigest(f));
+      const cached = await withFsCacheAsync(async () => {
+        await prefetch(files);
+        return files.map((f) => fileDigest(f));
+      });
+      assert.deepEqual(cached, fresh);
+      assert.equal(fresh[0], digest(readFileSync(files[0] as string)));
       assert.deepEqual(direct.slice(0, 3), [{ text: 'plain' }, { skip: 'binary' }, { text: 'bom' }]);
     } finally {
       rmSync(root, { recursive: true, force: true });

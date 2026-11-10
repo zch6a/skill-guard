@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync, type Dirent, type Stats } from 'node:fs';
 import { readFile as readFileAsync, stat as statAsync } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -18,13 +19,15 @@ interface FsCache {
   stat: Map<string, Stats | null>;
   dirs: Map<string, Dirent[] | null>;
   texts: Map<string, { text: string } | { skip: string }>;
+  /** Content digests of files already read for scanning, so `lock` need not read them again. */
+  digests: Map<string, string>;
 }
 let fsCache: FsCache | null = null;
 
 /** Run `fn` with filesystem results cached; nested calls share the outer cache. */
 export function withFsCache<T>(fn: () => T): T {
   if (fsCache) return fn();
-  fsCache = { stat: new Map(), dirs: new Map(), texts: new Map() };
+  fsCache = { stat: new Map(), dirs: new Map(), texts: new Map(), digests: new Map() };
   try {
     return fn();
   } finally {
@@ -70,19 +73,30 @@ export function listDir(path: string): string[] {
   return (entries(path) ?? []).map((e) => e.name);
 }
 
-const SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.cache']);
+/** Dependencies and VCS data: never what an agent loads. */
+const SKIP_ALWAYS = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv']);
+/** Build output: skipped when searching a repository for items, but scanned inside an item (a skill's dist/ is its code). */
+const SKIP_IN_REPO = new Set(['dist', 'build', 'out', '.next', '.cache', 'target', 'coverage']);
+/** Under these, a folder name is an item name (a skill called "build"), never build output. */
+const ITEM_PARENTS = new Set(['skills', 'commands', 'agents', 'plugins', 'skill', 'command', 'agent', 'plugin']);
 
-/** All files under `root` (depth-limited, skips dependency and VCS folders). */
-export function walkFiles(root: string, maxDepth = 6, maxFiles = 5000): string[] {
+/**
+ * All files under `root` (depth-limited). `item`: everything inside one skill/plugin except
+ * dependencies and VCS data. `repo`: also skips build output, except where the folder name
+ * is an item name — otherwise a skill named "build" would be invisible to a repository scan.
+ */
+export function walkFiles(root: string, maxDepth = 6, maxFiles = 5000, mode: 'item' | 'repo' = 'item'): string[] {
   const out: string[] = [];
   const visit = (dir: string, depth: number) => {
     const list = entries(dir);
     if (!list) return;
+    const parent = dir.slice(Math.max(dir.lastIndexOf('/'), dir.lastIndexOf('\\')) + 1).toLowerCase();
     for (const e of list) {
       if (out.length >= maxFiles) return;
       const p = join(dir, e.name);
       if (e.isDirectory()) {
-        if (depth < maxDepth && !SKIP_DIRS.has(e.name)) visit(p, depth + 1);
+        const skip = SKIP_ALWAYS.has(e.name) || (mode === 'repo' && SKIP_IN_REPO.has(e.name) && !ITEM_PARENTS.has(parent));
+        if (depth < maxDepth && !skip) visit(p, depth + 1);
       } else if (e.isFile()) out.push(p);
     }
   };
@@ -124,9 +138,29 @@ function readTextUncached(path: string): { text: string } | { skip: string } {
   }
   if (size > MAX_FILE_BYTES) return { skip: `larger than ${MAX_FILE_BYTES / 1024 / 1024} MB` };
   try {
-    return decodeText(readFileSync(path));
+    const buf = readFileSync(path);
+    fsCache?.digests.set(path, digest(buf));
+    return decodeText(buf);
   } catch (e) {
     return { skip: (e as NodeJS.ErrnoException).code ?? 'unreadable' };
+  }
+}
+
+/** Content hash used by lock files (sha256, first 32 hex chars). Changing it would invalidate every lock. */
+export function digest(data: string | Buffer): string {
+  return createHash('sha256').update(data).digest('hex').slice(0, 32);
+}
+
+/** The digest of a file's bytes, reusing the read done for scanning when there was one. */
+export function fileDigest(path: string): string {
+  const hit = fsCache?.digests.get(path);
+  if (hit) return hit;
+  try {
+    const d = digest(readFileSync(path));
+    fsCache?.digests.set(path, d);
+    return d;
+  } catch {
+    return 'unreadable';
   }
 }
 
@@ -141,7 +175,7 @@ function decodeText(buf: Buffer): { text: string } | { skip: string } {
 /** Like withFsCache, for async work (see prefetch). */
 export async function withFsCacheAsync<T>(fn: () => Promise<T>): Promise<T> {
   if (fsCache) return fn();
-  fsCache = { stat: new Map(), dirs: new Map(), texts: new Map() };
+  fsCache = { stat: new Map(), dirs: new Map(), texts: new Map(), digests: new Map() };
   try {
     return await fn();
   } finally {
@@ -165,7 +199,12 @@ export async function prefetch(paths: string[], concurrency = 16): Promise<void>
       let r: { text: string } | { skip: string };
       try {
         const st = await statAsync(p);
-        r = st.size > MAX_FILE_BYTES ? { skip: `larger than ${MAX_FILE_BYTES / 1024 / 1024} MB` } : decodeText(await readFileAsync(p));
+        if (st.size > MAX_FILE_BYTES) r = { skip: `larger than ${MAX_FILE_BYTES / 1024 / 1024} MB` };
+        else {
+          const buf = await readFileAsync(p);
+          cache.digests.set(p, digest(buf));
+          r = decodeText(buf);
+        }
       } catch (e) {
         r = { skip: (e as NodeJS.ErrnoException).code ?? 'unreadable' };
       }

@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import type { Capability, Item } from './types.ts';
-import { exists, home, isDir } from './util.ts';
+import { digest as sha, exists, fileDigest, home, isDir } from './util.ts';
 
 /**
  * Trust-on-first-use pinning. Reviewing a skill or MCP server once proves
@@ -34,15 +33,6 @@ export interface LockFile {
   items: Record<string, LockEntry>;
 }
 
-const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex').slice(0, 32);
-
-function fileHash(file: string): string {
-  try {
-    return sha(readFileSync(file));
-  } catch {
-    return 'unreadable';
-  }
-}
 
 function summary(item: Item): string | undefined {
   if (item.hook) return item.hook.command ?? item.hook.type;
@@ -53,7 +43,7 @@ function summary(item: Item): string | undefined {
 export function fingerprint(item: Item): LockEntry {
   const base = isDir(item.path) ? item.path : dirname(item.path);
   const files: Record<string, string> = {};
-  for (const f of item.files) files[relative(base, f).replace(/\\/g, '/') || f] = fileHash(f);
+  for (const f of item.files) files[relative(base, f).replace(/\\/g, '/') || f] = fileDigest(f);
   // The definition itself (hook command, MCP command/env/url) is part of what was approved.
   const def = JSON.stringify({ kind: item.kind, name: item.name, hook: item.hook ?? null, mcp: item.mcp ?? null, meta: item.kind === 'mcp-server' || item.kind === 'hook' ? item.meta : null });
   const hash = sha(def + JSON.stringify(Object.entries(files).sort()));

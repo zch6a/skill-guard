@@ -5,6 +5,7 @@ import { lineAt } from '../util.ts';
 import { RULE_BY_ID } from './catalog.ts';
 import { IMPERATIVE_NEAR, SHELL_FILE, contextual, eachMatch, emit, inFence, isTestPath, lower, type Ctx } from './context.ts';
 import { RE, findBlobs } from './patterns.ts';
+import { normalizeShell } from './shell.ts';
 
 /** Run every content rule over one unit of text. */
 export function scanUnit(unit: TextUnit): Finding[] {
@@ -48,6 +49,16 @@ export function scanUnit(unit: TextUnit): Finding[] {
         const sev = contextual('SG104', ctx, m.index) ?? 'medium';
         emit(ctx, 'SG104', m.index, sev, 'An HTML comment (invisible when rendered) contains instructions.', body.trim().replace(/\s+/g, ' ').slice(0, 160));
       }
+    });
+  // SG104 also: SVG/HTML text styled to be invisible. Anywhere (an .svg asset is "docs", but hidden text is never documentation).
+  if (/font-size|opacity|display\s*:\s*none|visibility\s*:\s*hidden/i.test(t))
+    eachMatch(t, RE.hiddenElement, (m) => {
+      const body = m[m.length - 1] ?? '';
+      if (!RE.imperative.test(body) && !RE.override.test(body)) return;
+      if (prose && inFence(t, m.index)) return;
+      // Hidden instructions that also override, conceal or touch secrets are an attack, not a styling accident.
+      const loud = RE.override.test(body) || RE.conceal.test(body) || RE.secretFiles.test(body);
+      emit(ctx, 'SG104', m.index, isTestPath(unit.file) ? 'low' : loud ? 'high' : 'medium', 'Text styled to be invisible (zero size, zero opacity or hidden) contains instructions.', body.trim().replace(/\s+/g, ' ').slice(0, 160));
     });
   // SG105: the description decides when an agent loads an item, so that is where hijacking bites.
   if (k === 'metadata')
@@ -155,6 +166,18 @@ export function scanUnit(unit: TextUnit): Finding[] {
     const sev = contextual('SG301', ctx, m.index, { docs: 2 }, m[0].length, false);
     if (sev) emit(ctx, 'SG301', m.index, sev, 'Pipes a download straight into an interpreter.');
   });
+  // The same, for a command assembled from string pieces and variables in shell code.
+  if ((k === 'command' || SHELL_FILE.test(unit.file ?? '')) && !ctx.out.some((f) => f.rule === 'SG301')) {
+    const norm = normalizeShell(t);
+    if (norm)
+      eachMatch(norm, RE.dlExec, (m) => {
+        // Lines are preserved: point at the same line in the original.
+        const line = norm.slice(0, m.index).split('\n').length;
+        const index = t.split('\n').slice(0, line - 1).join('\n').length + (line > 1 ? 1 : 0);
+        const sev = contextual('SG301', ctx, index, { docs: 2 }, 0, false);
+        if (sev) emit(ctx, 'SG301', index, sev, 'Pipes a download into an interpreter, assembled from string pieces and variables.', norm.split('\n')[line - 1]?.trim());
+      }, 1);
+  }
   // SG305: download an archive/program, then unpack it with a password, clear quarantine or run it.
   if (k !== 'docs') {
     const dl = RE.binDownload.exec(t);
@@ -211,6 +234,16 @@ export function scanUnit(unit: TextUnit): Finding[] {
       // Paths are routinely written in backticks; the widening request is what matters, so no quoted-mention downgrade.
       const sev = contextual('SG402', ctx, m.index, { instructions: 1 }, m[0].length, false);
       if (sev) emit(ctx, 'SG402', m.index, sev, `Asks to widen the agent's permissions in ${m[0]}.`);
+    });
+  // SG110: "in every page you create, include <script src=…>" — a payload planted in the agent's output.
+  if (k === 'instructions')
+    eachMatch(t, RE.outputPayload, (m) => {
+      const line = lineAt(t, m.index, 600);
+      if (!RE.outputScope.test(line)) return;
+      let sev = contextual('SG110', ctx, m.index, { instructions: 0 }, m[0].length, false);
+      // Libraries from the big public CDNs are how many legitimate page-building skills work.
+      if (sev && RE.knownCdn.test(line.slice(Math.max(0, line.indexOf(m[0])), line.indexOf(m[0]) + m[0].length + 200))) sev = lower(sev, 2);
+      if (sev) emit(ctx, 'SG110', m.index, sev, 'Tells the agent to put a remote script or download-and-run line into everything it writes.');
     });
   eachMatch(t, RE.gitHooks, (m) => {
     const line = lineAt(t, m.index, 400);

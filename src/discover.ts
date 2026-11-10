@@ -234,7 +234,7 @@ function addPlugin(c: Collector, root: string, host: Host, manifestPath: string)
 function addPluginsUnder(c: Collector, root: string, host: Host, depth = 6): void {
   if (!isDir(root)) return;
   const marker = host === 'codex' ? '.codex-plugin' : '.claude-plugin';
-  for (const f of walkFiles(root, depth, 20000)) {
+  for (const f of walkFiles(root, depth, 20000, 'repo')) {
     if (basename(f) !== 'plugin.json' || basename(dirname(f)) !== marker) continue;
     addPlugin(c, dirname(dirname(f)), host, f);
   }
@@ -267,9 +267,26 @@ function addDshPlugins(c: Collector, dshHome: string): void {
 
 // ------------------------------------------------------------------ context files
 
-function addContext(c: Collector, path: string, host: Host): void {
+function addContext(c: Collector, path: string, host: Host, root?: string): void {
   if (!exists(path)) return;
-  c.add({ id: `${host}:context:${basename(path)}`, kind: 'context', host, name: basename(path), path, files: [path], meta: {} });
+  c.add({ id: `${host}:context:${basename(path)}`, kind: 'context', host, name: basename(path), path, files: [path, ...scriptsMentioned(path, root)], meta: {} });
+}
+
+/**
+ * Local scripts that a Markdown instruction file tells the agent to run (`bash scripts/setup.sh`
+ * in backticks). A poisoned CLAUDE.md does not need to contain the payload — only to point at it.
+ */
+function scriptsMentioned(md: string, root?: string): string[] {
+  const r = readText(md);
+  if (!('text' in r)) return [];
+  const bases = [...new Set([dirname(md), root].filter((b): b is string => !!b))];
+  const out = new Set<string>();
+  for (const m of r.text.matchAll(/`([^`\n]{1,300})`|^\s*(?:\$\s+)?((?:bash|sh|zsh|python3?|node|pwsh|powershell|\.\/)[^\n]{0,300})$/gm)) {
+    const span = m[1] ?? m[2] ?? '';
+    for (const base of bases) for (const f of referencedFiles(span, base)) out.add(f);
+  }
+  out.delete(resolve(md));
+  return [...out];
 }
 
 // ------------------------------------------------------------------ entry points
@@ -383,7 +400,7 @@ function discoverPathUncached(target: string): Item[] {
     if (exists(root)) c.add({ kind: /\.md$/i.test(root) ? 'context' : 'plugin', host: 'repo', name: basename(root), path: root, files: [root], meta: {} });
     return c.items;
   }
-  const files = walkFiles(root, 8, 20000);
+  const files = walkFiles(root, 8, 20000, 'repo');
   const rel = (f: string) => relative(root, f).replace(/\\/g, '/');
 
   // plugins first, so their skills/hooks/MCP servers are attributed to them
@@ -411,10 +428,10 @@ function discoverPathUncached(target: string): Item[] {
     } else if (/^opencode\.jsonc?$/.test(name)) {
       const t = readText(f);
       if ('text' in t) addMcpServers(c, obj(parseJsonc(t.text)).mcp, 'repo', f);
-    } else if (/^(CLAUDE|AGENTS|GEMINI)\.md$/i.test(name) || name === '.cursorrules' || /(^|\/)\.cursor\/rules\/.+\.mdc?$/.test(r) || /(^|\/)\.github\/copilot-instructions\.md$/.test(r)) addContext(c, f, 'repo');
+    } else if (/^(CLAUDE|AGENTS|GEMINI)\.md$/i.test(name) || name === '.cursorrules' || /(^|\/)\.cursor\/rules\/.+\.mdc?$/.test(r) || /(^|\/)\.github\/copilot-instructions\.md$/.test(r)) addContext(c, f, 'repo', root);
     else if (/(^|\/)\.claude\/(commands|agents)\/.+\.md$/.test(r)) {
       const kind: ItemKind = r.includes('/commands/') ? 'command' : 'subagent';
-      c.add({ kind, host: 'repo', name: basename(f, '.md'), path: f, files: [f], meta: {} });
+      c.add({ kind, host: 'repo', name: basename(f, '.md'), path: f, files: [f, ...scriptsMentioned(f, root)], meta: {} });
     }
   }
   return c.items;
