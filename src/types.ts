@@ -108,9 +108,14 @@ export interface RuleInfo {
   fix: string;
 }
 
+/** What an item can do (not a verdict): see capabilities.ts. */
+export type Capability = 'runs-code' | 'auto-runs' | 'network' | 'writes-files' | 'shell' | 'binaries' | 'credentials';
+
 export interface ScanResult {
   items: Item[];
   findings: Finding[];
+  /** Capabilities per item id (items that can do nothing beyond prompting are absent). */
+  capabilities?: Record<string, Capability[]>;
   /** Files that could not be read (too big, binary, permission denied). */
   skipped: { file: string; reason: string }[];
 }

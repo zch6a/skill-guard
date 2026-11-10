@@ -2,6 +2,20 @@
 
 All notable changes are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [0.2.0] — 2026-11-11
+
+### Added
+
+- `list` shows what each item **can do** — `auto` (runs without being asked), `code`, `net`, `write`, `shell`, `bin`, `creds` — and `--can auto,net` filters by it. JSON output carries a `capabilities` array per item.
+- Per-project MCP servers in `~/.claude.json` get stable ids (`name@<project>`) and names that tell projects apart (`db (work/app)`).
+
+### Changed
+
+- Precision measured on 1,537 items from five popular public skill repositories: 20 medium-or-higher findings → 2, both genuine.
+- SG201 (sending data out) is `medium` on its own; documentation placeholders (`example.com`, `company.com`, …) are low. The exfiltration chain (SG205) now also fires when the sending side is only a hard-coded POST in code.
+- SG101 no longer matches "a new system prompt" in ordinary prose; SG102 ignores "do not tell the user they need to…"; SG301 is downgraded when a sentence explicitly forbids running the quoted command ("Never run `curl … | sh`"); SG401 ignores start-up folders that are only named, and `echo 'export NAME=…' >> ~/.bashrc`.
+- Terminal: hooks are headed by event and owning plugin instead of repeating their command; long paths are shortened in the middle so the file name stays visible; paths under `SKILL_GUARD_HOME` are shown with `~`.
+
 ## [0.1.0] — 2026-11-11
 
 ### Added

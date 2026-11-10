@@ -1,7 +1,8 @@
 import { basename, dirname, join, relative } from 'node:path';
 import { parseFrontmatter } from './parse.ts';
 import { RULE_BY_ID, isBinaryAsset, scanHook, scanMcp, scanPackageJson, scanSkillMeta, scanUnit } from './rules.ts';
-import type { Finding, Item, ScanResult, Severity, TextUnit, UnitKind } from './types.ts';
+import { capabilitiesOf } from './capabilities.ts';
+import type { Capability, Finding, Item, ScanResult, Severity, TextUnit, UnitKind } from './types.ts';
 import { SEVERITY_ORDER } from './types.ts';
 import { exists, isCodeFile, isObject, readJson, readText, walkFiles } from './util.ts';
 
@@ -141,9 +142,16 @@ function suppressed(f: Finding, rules: Suppression[]): Suppression | undefined {
 export function scanItems(items: Item[], opts: ScanOptions = {}): ScanResult & { suppressed: number } {
   const findings: Finding[] = [];
   const skipped: ScanResult['skipped'] = [];
+  const capabilities: Record<string, Capability[]> = {};
   for (const item of items) {
-    for (const unit of unitsFor(item, skipped)) findings.push(...scanUnit(unit));
-    findings.push(...structural(item));
+    const units = unitsFor(item, skipped);
+    const own: Finding[] = [];
+    for (const unit of units) own.push(...scanUnit(unit));
+    own.push(...structural(item));
+    // Capabilities describe the item, so they use findings before suppression.
+    const caps = capabilitiesOf(item, units, own);
+    if (caps.length) capabilities[item.id] = caps;
+    findings.push(...own);
   }
   // De-duplicate: one finding per rule, item, file and line (keep the most severe).
   const best = new Map<string, Finding>();
@@ -160,7 +168,7 @@ export function scanItems(items: Item[], opts: ScanOptions = {}): ScanResult & {
     else kept.push(f);
   }
   kept.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || a.item.localeCompare(b.item) || (a.line ?? 0) - (b.line ?? 0));
-  return { items, findings: kept, skipped, suppressed: hidden };
+  return { items, findings: kept, capabilities, skipped, suppressed: hidden };
 }
 
 /** Worst severity per item (items with no findings are absent). */

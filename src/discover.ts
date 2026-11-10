@@ -16,7 +16,7 @@ class Collector {
 
   add(item: Omit<Item, 'id'> & { id?: string }): Item | null {
     // The same folder can be reachable twice (e.g. a skill symlinked into two agents): scan it once per host.
-    const pathKey = `${item.host}|${item.kind}|${item.path}|${item.hook ? JSON.stringify(item.hook) : ''}|${item.kind === 'mcp-server' ? item.name : ''}`;
+    const pathKey = `${item.host}|${item.kind}|${item.path}|${item.hook ? JSON.stringify(item.hook) : ''}|${item.kind === 'mcp-server' ? (item.id ?? item.name) : ''}`;
     if (this.seenPaths.has(pathKey)) return null;
     this.seenPaths.add(pathKey);
     const base = item.id ?? `${item.host}:${item.kind}:${item.name}`;
@@ -97,19 +97,24 @@ export function normalizeMcp(def: unknown): McpServer {
   return server;
 }
 
-function addMcpServers(c: Collector, servers: unknown, host: Host, configPath: string, parent?: Item): void {
+/**
+ * `project`: for servers scoped to one project in ~/.claude.json (`projects["<path>"].mcpServers`).
+ * The project goes into the id so the same server name in two projects gets two stable ids.
+ */
+function addMcpServers(c: Collector, servers: unknown, host: Host, configPath: string, parent?: Item, project?: string): void {
   for (const [name, def] of Object.entries(obj(servers))) {
     if (!isObject(def)) continue;
     c.add({
-      id: `${host}:mcp-server:${parent ? parent.name + '/' : ''}${name}`,
+      id: `${host}:mcp-server:${parent ? parent.name + '/' : ''}${name}${project ? `@${project.replace(/\\/g, '/')}` : ''}`,
       kind: 'mcp-server',
       host,
-      name,
+      // "db (work/app)": the last two folders tell projects apart without the full path.
+      name: project ? `${name} (${project.replace(/\\/g, '/').replace(/\/+$/, '').split('/').slice(-2).join('/') || project})` : name,
       path: configPath,
       files: [],
       parent: parent?.id,
       mcp: normalizeMcp(def),
-      meta: def,
+      meta: project ? { ...def, project } : def,
     });
   }
 }
@@ -294,7 +299,7 @@ export function discoverMachine(opts: DiscoverOptions = {}): Item[] {
     addMcpServers(c, claudeJson.mcpServers, 'claude-code', join(H, '.claude.json'));
     for (const [proj, cfg] of Object.entries(obj(claudeJson.projects))) {
       const servers = obj(obj(cfg).mcpServers);
-      if (Object.keys(servers).length) addMcpServers(c, servers, 'claude-code', `${join(H, '.claude.json')} (${proj})`);
+      if (Object.keys(servers).length) addMcpServers(c, servers, 'claude-code', join(H, '.claude.json'), undefined, proj);
     }
     addContext(c, join(claudeHome, 'CLAUDE.md'), 'claude-code');
   }

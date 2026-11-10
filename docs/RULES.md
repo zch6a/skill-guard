@@ -80,9 +80,9 @@ Instructions or commands that disable permission prompts or the sandbox (`--dang
 
 ### SG201 — Sends data to an external server
 
-**Default severity:** high
+**Default severity:** medium
 
-Uploading or POSTing data from your machine is how secrets and source code get exfiltrated. Combined with file or environment access it is the core of most malicious skills.
+Uploading or POSTing data from your machine is how secrets and source code get exfiltrated. On its own it is often legitimate (calling an API); combined with credential or environment access in the same file it becomes SG205 (critical).
 
 **Fix:** Check exactly what is sent and to whom. Remove it if the item has no clear reason to upload anything.
 

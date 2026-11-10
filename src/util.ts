@@ -154,7 +154,7 @@ export function lineAt(text: string, index: number, max = 160): string {
 
 /** Replace the home directory with `~` for display. */
 export function tildify(p: string): string {
-  const h = homedir();
+  const h = home();
   if (!p || !h) return p;
   const a = process.platform === 'win32' ? p.toLowerCase() : p;
   const b = process.platform === 'win32' ? h.toLowerCase() : h;

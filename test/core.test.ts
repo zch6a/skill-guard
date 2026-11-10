@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { discoverPath } from '../src/discover.ts';
 import { buildLock, diffLock } from '../src/lock.ts';
 import { parseFrontmatter, parseJsonc, parseToml } from '../src/parse.ts';
-import { toSarif } from '../src/report.ts';
+import { fitPath, toSarif } from '../src/report.ts';
 import { RULES, splitPackage } from '../src/rules.ts';
 import { scanItems } from '../src/scan.ts';
 import { findHidden, reveal, stripHidden } from '../src/unicode.ts';
@@ -188,6 +188,17 @@ describe('SARIF', () => {
   });
 });
 
+describe('formatting', () => {
+  it('shortens paths in the middle, keeping the root and the file name', () => {
+    const p = '~/.claude/plugins/marketplaces/shady/plugins/helpful-tools/hooks/hooks.json';
+    assert.equal(fitPath(p, 200), p);
+    const short = fitPath(p, 40);
+    assert.ok(short.length <= 40, short);
+    assert.ok(short.startsWith('~/.claude/…/') && short.endsWith('/hooks/hooks.json'), short);
+    assert.ok(fitPath('C:\\a\\verylongsegmentname\\x.json', 12).length <= 12);
+  });
+});
+
 const BIN = fileURLToPath(new URL('../src/bin.ts', import.meta.url));
 function cli(args: string[]): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
@@ -230,6 +241,36 @@ describe('cli', () => {
       assert.match(d.out, /\+ new\s+hook/);
       assert.match(d.out, /SG301/, 'new items are scanned');
       assert.equal(d.code, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it('list shows capabilities and --can filters by them', async () => {
+    const root = tmp();
+    try {
+      put(root, 'skills/fetcher/SKILL.md', '---\nname: fetcher\ndescription: Fetch a page.\n---\nRun scripts/get.py.\n');
+      put(root, 'skills/fetcher/scripts/get.py', 'import requests, sys\nopen("out.html", "w").write(requests.get(sys.argv[1]).text)\n');
+      put(root, 'skills/plain/SKILL.md', '---\nname: plain\ndescription: Summarise.\n---\nSummarise in three bullets.\n');
+      // Help text, comments, tests and a local UI are not network access.
+      put(root, 'skills/quiet/SKILL.md', '---\nname: quiet\ndescription: Local only.\n---\nRun scripts/a.py.\n');
+      put(root, 'skills/quiet/scripts/a.py', '# uses requests.get in v2\n"""Install with: pip install x"""\nprint("Install with: pip install pillow")\n');
+      put(root, 'skills/quiet/scripts/ui.js', "const ws = new WebSocket('ws://' + location.host + '/ws');\nfetch('/api/x', { method: 'POST' });\n");
+      put(root, 'skills/quiet/tests/test_a.py', 'import requests\nrequests.get("https://api.example.com")\n');
+      put(root, '.claude/settings.json', JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo done >> ~/notes.txt' }] }] } }));
+      const r = await cli(['list', root]);
+      assert.equal(r.code, 0);
+      assert.match(r.out, /fetcher\s+code net write/);
+      assert.match(r.out, /Capabilities/);
+      const caps = Object.fromEntries(JSON.parse((await cli(['list', root, '--json'])).out).items.map((i: { name: string; capabilities: string[] }) => [i.name, i.capabilities]));
+      assert.deepEqual(caps.fetcher, ['runs-code', 'network', 'writes-files']);
+      assert.deepEqual(caps.plain, []);
+      assert.deepEqual(caps.quiet, ['runs-code']);
+      const hook = Object.entries(caps).find(([n]) => n.startsWith('Stop'));
+      assert.deepEqual(hook?.[1], ['auto-runs', 'runs-code', 'writes-files']);
+      const net = JSON.parse((await cli(['list', root, '--can', 'net', '--json'])).out);
+      assert.deepEqual(net.items.map((i: { name: string }) => i.name), ['fetcher']);
+      assert.equal((await cli(['list', root, '--can', 'auto,net', '--json'])).out.includes('"items": []'), true);
+      assert.equal((await cli(['list', root, '--can', 'teleport'])).code, 2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

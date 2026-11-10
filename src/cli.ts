@@ -7,7 +7,7 @@ import { buildLock, defaultLockPath, diffLock, readLock, writeLock } from './loc
 import { parseJsonc } from './parse.ts';
 import { renderDiff, renderExplain, renderInventory, renderRules, renderTerminal, toJson, toMarkdown, toSarif } from './report.ts';
 import { scanItems, type Suppression } from './scan.ts';
-import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Host, type Item, type Severity } from './types.ts';
+import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Capability, type Host, type Item, type Severity } from './types.ts';
 import { exists, home, isObject, readText, tildify } from './util.ts';
 import { VERSION } from './version.ts';
 
@@ -19,7 +19,7 @@ ${c.bold('Usage')}
 
 ${c.bold('Commands')}
   scan [path…]     Scan everything installed on this machine, or the given folders (default)
-  list [path…]     Inventory: every skill, plugin, hook and MCP server, with its risk
+  list [path…]     Inventory: every skill, plugin, hook and MCP server, with its risk and capabilities
   lock [path]      Record what is installed now, so later changes are flagged
   diff [path]      Show what changed since the last lock (new hooks, edited skills, swapped servers)
   explain <rule>   Why a rule matters and how to fix it
@@ -27,6 +27,7 @@ ${c.bold('Commands')}
 
 ${c.bold('Options')}
       --host <name>      Only these agents: claude, codex, cursor, opencode, deepseek, desktop, vscode, agents
+      --can <caps>       list: only items with all of these: code, auto, net, write, shell, bin, creds
       --min <level>      Show findings at or above: critical, high, medium (default), low, info
       --fail-on <level>  Exit with code 1 if a finding is at or above this level (default: high; "none" to disable)
       --json             JSON report on stdout
@@ -41,6 +42,7 @@ ${c.bold('Examples')}
   npx skill-guard                           scan every agent on this machine
   npx skill-guard scan ./some-skill         check a skill before installing it
   npx skill-guard scan . --sarif out.sarif  CI: scan a repository's agent config
+  skill-guard list --can auto,net           what runs by itself and talks to the network?
   skill-guard lock && skill-guard diff      get told when a plugin update adds a hook
 
 Everything runs locally. Nothing is executed, nothing is uploaded.
@@ -48,6 +50,7 @@ Everything runs locally. Nothing is executed, nothing is uploaded.
 
 const OPTIONS = {
   host: { type: 'string', multiple: true },
+  can: { type: 'string', multiple: true },
   min: { type: 'string' },
   'fail-on': { type: 'string' },
   json: { type: 'boolean' },
@@ -159,11 +162,41 @@ function cmdScan(v: Values, targets: string[]): number {
   return 0;
 }
 
+const CAP_ALIASES: Record<string, Capability> = {
+  code: 'runs-code',
+  'runs-code': 'runs-code',
+  auto: 'auto-runs',
+  'auto-runs': 'auto-runs',
+  net: 'network',
+  network: 'network',
+  write: 'writes-files',
+  writes: 'writes-files',
+  'writes-files': 'writes-files',
+  shell: 'shell',
+  bin: 'binaries',
+  binaries: 'binaries',
+  creds: 'credentials',
+  credentials: 'credentials',
+};
+
+function capabilityFilter(v: Values): Capability[] {
+  const out: Capability[] = [];
+  for (const name of (v.can ?? []).flatMap((s) => s.split(',')).filter(Boolean)) {
+    const cap = CAP_ALIASES[name.toLowerCase()];
+    if (!cap) throw new UsageError(`Unknown capability "${name}". Use: code, auto, net, write, shell, bin, creds`);
+    out.push(cap);
+  }
+  return out;
+}
+
 function cmdList(v: Values, targets: string[]): number {
+  const want = capabilityFilter(v);
   const items = discover(v, targets);
   const result = scanItems(items, { suppressions: loadSuppressions(v, targets) });
-  if (v.json) process.stdout.write(toJson(result) + '\n');
-  else console.log(renderInventory(result));
+  // Every requested capability must be present: `--can auto,net` = "runs by itself AND talks to the network".
+  const keep = want.length ? new Set(result.items.filter((i) => want.every((cap) => result.capabilities?.[i.id]?.includes(cap))).map((i) => i.id)) : undefined;
+  if (v.json) process.stdout.write(toJson(keep ? { ...result, items: result.items.filter((i) => keep.has(i.id)), findings: result.findings.filter((f) => keep.has(f.item)) } : result) + '\n');
+  else console.log(renderInventory(result, keep));
   return 0;
 }
 
@@ -202,7 +235,7 @@ function cmdDiff(v: Values, targets: string[]): number {
     }
   }
   const failOn = v['fail-on'] === 'none' ? null : level(v['fail-on'], 'high', '--fail-on');
-  return failOn && result.findings.some((f) => atLeast(f.severity, failOn)) ? 1 : changes.length ? 0 : 0;
+  return failOn && result.findings.some((f) => atLeast(f.severity, failOn)) ? 1 : 0;
 }
 
 export function main(argv: string[]): number {

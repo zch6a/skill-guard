@@ -1,10 +1,11 @@
 import { basename, dirname, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { c, fit, pad, plural, width } from './format.ts';
+import { CAPABILITY_HELP, CAPABILITY_LABEL } from './capabilities.ts';
 import type { ItemChange } from './lock.ts';
 import { RULE_BY_ID, RULES } from './rules.ts';
 import { itemRisk } from './scan.ts';
-import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Finding, type Item, type ScanResult, type Severity } from './types.ts';
+import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Capability, type Finding, type Item, type ScanResult, type Severity } from './types.ts';
 import { tildify } from './util.ts';
 import { VERSION } from './version.ts';
 
@@ -84,8 +85,11 @@ export function renderTerminal(result: ScanResult, opts: TerminalOptions): strin
     const item = itemsById.get(id);
     if (!item) continue;
     const sev = risk.get(id)!;
-    const head = `${sevColor(sev)(`${SEV_ICON[sev]} ${SEV_LABEL[sev]}`)}  ${c.dim(HOST_LABELS[item.host])} ${KIND_LABEL[item.kind]}  ${c.bold(fit(item.name, 60))}`;
-    out.push(`${head}  ${c.dim(fit(tildify(item.path), Math.max(20, cols - width(head) - 4)))}`);
+    // Hooks are named by their command, which the evidence line shows anyway: head with event and owner instead.
+    const name = item.hook ? `${item.hook.event}${item.hook.matcher ? ` [${item.hook.matcher}]` : ''}` : item.name;
+    const owner = item.parent ? itemsById.get(item.parent)?.name : undefined;
+    const head = `${sevColor(sev)(`${SEV_ICON[sev]} ${SEV_LABEL[sev]}`)}  ${c.dim(HOST_LABELS[item.host])} ${KIND_LABEL[item.kind]}  ${c.bold(fit(name, 60))}${owner ? c.dim(` from ${owner}`) : ''}`;
+    out.push(`${head}  ${c.dim(fitPath(tildify(item.path), Math.max(24, cols - width(head) - 4)))}`);
     const list = byItem.get(id)!.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity]);
     const limit = opts.verbose ? Infinity : 4;
     for (const f of list.slice(0, limit)) {
@@ -112,10 +116,41 @@ export function renderTerminal(result: ScanResult, opts: TerminalOptions): strin
   return out.join('\n');
 }
 
-export function renderInventory(result: ScanResult): string {
+/** Shorten a path in the middle so both the root (`~/.claude`) and the file name survive. */
+export function fitPath(p: string, max: number): string {
+  if (p.length <= max) return p;
+  const parts = p.split(/[\\/]/);
+  const sepChar = p.includes('/') ? '/' : '\\';
+  const head = parts.slice(0, Math.min(2, parts.length - 1)).join(sepChar);
+  let tail = parts.slice(-1);
+  // Keep as many trailing segments as fit after "<head>/…/".
+  for (let i = parts.length - 2; i >= 2; i--) {
+    const next = [parts[i] as string, ...tail];
+    if (head.length + 3 + next.join(sepChar).length > max) break;
+    tail = next;
+  }
+  const out = `${head}${sepChar}…${sepChar}${tail.join(sepChar)}`;
+  return out.length <= max ? out : '…' + p.slice(-(max - 1));
+}
+
+/** "from <plugin>: ‹plugin›/hooks/run.sh start" — who installed the hook and what it runs, without the noise. */
+function hookDetail(i: Item, byId: Map<string, Item>): string {
+  const cmd = (i.hook?.command ?? '')
+    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}\/?|\$CLAUDE_PLUGIN_ROOT\/?/g, '‹plugin›/')
+    .replace(/"([^"\s]*)"|'([^'\s]*)'/g, '$1$2')
+    .replace(/\s+/g, ' ');
+  const parent = i.parent ? byId.get(i.parent)?.name : undefined;
+  return fit(parent ? `${parent}: ${cmd}` : cmd, 50);
+}
+
+/** `only`: show just these item ids (e.g. `--can`), while still resolving parents from the full list. */
+export function renderInventory(result: ScanResult, only?: Set<string>): string {
   const risk = itemRisk(result.findings.filter((f) => atLeast(f.severity, 'medium')));
-  const rows = [...result.items].sort((a, b) => a.host.localeCompare(b.host) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  const rows = result.items.filter((i) => !only || only.has(i.id)).sort((a, b) => a.host.localeCompare(b.host) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
   const out: string[] = [`${c.bold(plural(rows.length, 'item'))} ${c.dim(`(${inventoryLine(rows)})`)}`, ''];
+  const capsOf = (id: string) => result.capabilities?.[id] ?? [];
+  const byId = new Map(result.items.map((i) => [i.id, i]));
+  const used = new Set<Capability>();
   let lastHost = '';
   for (const i of rows) {
     if (i.host !== lastHost) {
@@ -124,8 +159,16 @@ export function renderInventory(result: ScanResult): string {
     }
     const r = risk.get(i.id);
     const flag = r ? sevColor(r)(SEV_LABEL[r]) : c.green('ok');
-    const detail = i.hook ? c.dim(fit(i.hook.command ?? '', 60)) : i.mcp ? c.dim(fit(i.mcp.url ?? [i.mcp.command ?? '', ...i.mcp.args].join(' '), 60)) : c.dim(fit(i.description ?? '', 60));
-    out.push(`  ${pad(flag, 9)} ${pad(KIND_LABEL[i.kind], 12)} ${pad(fit(i.name, 44), 44)} ${detail}`);
+    const caps = capsOf(i.id);
+    for (const cap of caps) used.add(cap);
+    const capText = caps.map((cap) => (cap === 'auto-runs' || cap === 'credentials' ? c.yellow(CAPABILITY_LABEL[cap]) : CAPABILITY_LABEL[cap])).join(' ');
+    const detail = i.hook ? hookDetail(i, byId) : i.mcp ? fit(i.mcp.url ?? [i.mcp.command ?? '', ...i.mcp.args].join(' '), 50) : fit((i.description ?? '').replace(/\s+/g, ' ').trim(), 50);
+    const name = i.hook ? `${i.hook.event}${i.hook.matcher ? ` [${i.hook.matcher}]` : ''}` : i.name;
+    out.push(`  ${pad(flag, 9)} ${pad(KIND_LABEL[i.kind], 12)} ${pad(fit(name, 36), 36)} ${pad(capText, 24)} ${c.dim(detail)}`);
+  }
+  if (used.size) {
+    out.push('', c.dim('Capabilities (what an item can do, not a verdict):'));
+    for (const cap of Object.keys(CAPABILITY_LABEL) as Capability[]) if (used.has(cap)) out.push(c.dim(`  ${pad(CAPABILITY_LABEL[cap], 6)} ${CAPABILITY_HELP[cap]} (${rows.filter((i) => capsOf(i.id).includes(cap)).length})`));
   }
   return out.join('\n');
 }
@@ -161,7 +204,7 @@ export function renderDiff(changes: ItemChange[], lockPath: string): string {
 // ---------------------------------------------------------------- machine-readable
 
 export function toJson(result: ScanResult & { suppressed?: number }, changes?: ItemChange[]): string {
-  const items = result.items.map((i) => ({ id: i.id, kind: i.kind, host: i.host, name: i.name, path: i.path, description: i.description, parent: i.parent, files: i.files.length, mcp: i.mcp, hook: i.hook }));
+  const items = result.items.map((i) => ({ id: i.id, kind: i.kind, host: i.host, name: i.name, path: i.path, description: i.description, parent: i.parent, files: i.files.length, capabilities: result.capabilities?.[i.id] ?? [], mcp: i.mcp, hook: i.hook }));
   return JSON.stringify({ tool: 'skill-guard', version: VERSION, summary: counts(result.findings), items, findings: result.findings, skipped: result.skipped, ...(changes ? { changes } : {}) }, null, 2);
 }
 

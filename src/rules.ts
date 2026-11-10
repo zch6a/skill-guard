@@ -20,7 +20,7 @@ export const RULES: RuleInfo[] = [
   { id: 'SG108', title: 'Turns off approvals or the sandbox', severity: 'high', why: 'Instructions or commands that disable permission prompts or the sandbox (`--dangerously-skip-permissions`, `bypassPermissions`, `danger-full-access`, YOLO mode) remove the last check between the model and your machine.', fix: 'Keep approvals on. Grant specific permissions instead of disabling them all.' },
 
   // --- data leaving the machine
-  { id: 'SG201', title: 'Sends data to an external server', severity: 'high', why: 'Uploading or POSTing data from your machine is how secrets and source code get exfiltrated. Combined with file or environment access it is the core of most malicious skills.', fix: 'Check exactly what is sent and to whom. Remove it if the item has no clear reason to upload anything.' },
+  { id: 'SG201', title: 'Sends data to an external server', severity: 'medium', why: 'Uploading or POSTing data from your machine is how secrets and source code get exfiltrated. On its own it is often legitimate (calling an API); combined with credential or environment access in the same file it becomes SG205 (critical).', fix: 'Check exactly what is sent and to whom. Remove it if the item has no clear reason to upload anything.' },
   { id: 'SG202', title: 'Known exfiltration endpoint', severity: 'critical', why: 'Request bins, tunnels and chat webhooks (webhook.site, ngrok, Discord/Slack/Telegram webhooks, Burp Collaborator, interactsh…) are what attackers use to receive stolen data; legitimate tools almost never hard-code them.', fix: 'Treat the item as malicious unless you wrote it yourself.' },
   { id: 'SG203', title: 'Reads credentials or private keys', severity: 'high', why: 'SSH keys, cloud credentials, browser cookie stores, crypto wallets and agent auth files are the first thing an attacker looks for.', fix: 'Remove the access. If a tool genuinely needs a credential, pass it explicitly through a scoped environment variable.' },
   { id: 'SG204', title: 'Dumps environment variables', severity: 'medium', why: 'The environment holds API keys and tokens. Serialising all of it is rarely needed and is a common first step of exfiltration.', fix: 'Read the specific variables you need instead of the whole environment.' },
@@ -75,6 +75,12 @@ const NEGATION = /\b(never|not|don'?t|do not|must not|mustn'?t|should not|should
 function negated(text: string, index: number): boolean {
   const start = Math.max(0, text.lastIndexOf('\n', index - 1) + 1, index - 120);
   return NEGATION.test(text.slice(start, index));
+}
+
+/** "never run …", "do not execute …" earlier in the same line: the sentence forbids running what follows. */
+function forbidsRunning(text: string, index: number): boolean {
+  const start = Math.max(0, text.lastIndexOf('\n', index - 1) + 1, index - 120);
+  return /\b(never|do not|don'?t|must not|should not|shouldn'?t)\s+(run|execute|pipe|paste|copy|use|follow)\b(?![^`]*\b(just|instead|then)\b)/i.test(text.slice(start, index));
 }
 
 /** The match sits inside quotes — the text is *talking about* the phrase (e.g. warning about it), not saying it. */
@@ -155,7 +161,9 @@ function contextual(ruleId: string, ctx: Ctx, index: number, perKind: Partial<Re
   if (prose && negated(unit.text, index)) sev = lower(sev, 2);
   // "`X` does not mean ...", "`X` is not allowed": explaining the thing, not asking for it.
   if (prose && /^[`"'\s)]{0,4}(does not|doesn'?t|is not|isn'?t|won'?t|will not|should not|must not|cannot|can'?t)\b/i.test(unit.text.slice(index + length, index + length + 60))) sev = lower(sev, 2);
-  if (prose && quotes && length && quoted(unit.text, index, length)) sev = lower(sev, 2);
+  // Command rules skip the quoted downgrade (a backticked command is still a command) — unless a
+  // negation directly governs running it: "Never run `curl … | sh`".
+  if (prose && length && quoted(unit.text, index, length) && (quotes || forbidsRunning(unit.text, index))) sev = lower(sev, 2);
   if (prose && inFence(unit.text, index)) sev = lower(sev, 1);
   if (unit.kind === 'code' && commentish(unit.text, index, length, unit.file)) sev = lower(sev, 2);
   if (isTestPath(unit.file)) sev = lower(sev, 2);
@@ -176,8 +184,8 @@ function eachMatch(text: string, re: RegExp, fn: (m: RegExpExecArray) => void, l
 // ---------------------------------------------------------------- patterns
 
 const RE = {
-  override: /\b(ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}\b(all |any |the |your |previous |prior |above |earlier |preceding |system |safety |original )+(instructions?|prompts?|rules|guidelines|directives|messages|context|policies)\b|\byou are now (?:in )?(?:a |an )?(?:different|new|unrestricted|jailbroken|developer mode|dan)\b|\bnew system prompt\b|忽略(之前|以上|前面|所有)的?(指令|提示|规则|指示)/i,
-  conceal: /\b(do not|don'?t|never|must not)\s+(tell|inform|notify|alert|show|mention|reveal|disclose|let)\s+(the |this )?(user|human|operator|developer)\b|\bwithout (the user|the human|anyone|them) (knowing|noticing|seeing|being told|asking)\b|\b(silently|secretly|covertly|quietly|stealthily)\s+(send|upload|post|run|execute|install|copy|exfiltrate|forward|read|collect|delete|modify)\b|\bhide (this|it|these|the) (from|output|step|action)|不要(告诉|通知|让)用户|偷偷(地)?(发送|上传|执行|运行|读取)/i,
+  override: /\b(ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}\b(all |any |the |your |previous |prior |above |earlier |preceding |system |safety |original )+(instructions?|prompts?|rules|guidelines|directives|messages|context|policies)\b|\byou are now (?:in )?(?:a |an )?(?:different|new|unrestricted|jailbroken|developer mode|dan)\b|\b(here is|this is|below is|follow) (your|the) new system prompt\b|\bnew system prompt\s*[:：]|\byour new instructions are\b|忽略(之前|以上|前面|所有)的?(指令|提示|规则|指示)/i,
+  conceal: /\b(do not|don'?t|never|must not)\s+(tell|inform|notify|alert|show|mention|reveal|disclose|let)\s+(the |this )?(user|human|operator|developer)\b(?!,? (that )?(they|you) (need|needs|should|must|have to|ought))|\bwithout (the user|the human|anyone|them) (knowing|noticing|seeing|being told|asking)\b|\b(silently|secretly|covertly|quietly|stealthily)\s+(send|upload|post|run|execute|install|copy|exfiltrate|forward|read|collect|delete|modify)\b|\bhide (this|it|these|the) (from|output|step|action)|不要(告诉|通知|让)用户|偷偷(地)?(发送|上传|执行|运行|读取)/i,
   htmlComment: /<!--([\s\S]{0,2000}?)-->/,
   // Words that make a hidden comment an instruction rather than an authoring note.
   imperative: /\b(you must|ignore (all|previous|the|any)|disregard|send (the|all|it|this)|upload|exfiltrate|curl\s|wget\s|execute|run (this|the following|`)|do not (tell|mention|show)|system prompt|secret|password|api[_ ]?key|token|credentials?)\b/i,
@@ -300,8 +308,10 @@ export function scanUnit(unit: TextUnit): Finding[] {
     const external = /https?:\/\/(?!(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])[:/])[a-z0-9.-]+\.[a-z]{2,}/i.test(line);
     const relative = /\(\s*['"`]\/[^/]/.test(line);
     if ((k === 'code' || k === 'metadata') && relative) return;
+    // RFC 2606 / documentation placeholders: nothing real receives the data.
+    const placeholder = /https?:\/\/([a-z0-9-]+\.)*(example\.(com|org|net)|[a-z0-9-]+\.(example|test|invalid|localhost)|company\.com|your-?(domain|server|api|host|company)[a-z0-9.-]*|acme\.(com|corp))[:/'"\s]/i.test(line);
     // Code: routine unless the target is hard-coded. Instructions: an instruction to send somewhere unnamed is weaker.
-    const extra = k === 'code' ? (external ? 1 : 2) : k === 'instructions' && !external ? 1 : 0;
+    const extra = (placeholder ? 2 : 0) + (k === 'code' ? (external ? 1 : 2) : k === 'instructions' && !external ? 1 : 0);
     const sev = contextual('SG201', ctx, m.index, { docs: 2, metadata: 1 }, 0);
     if (sev) emit(ctx, 'SG201', m.index, lower(sev, extra), external ? 'Sends data to an external server.' : 'Sends data to a server.');
   });
@@ -350,7 +360,12 @@ export function scanUnit(unit: TextUnit): Finding[] {
 
   // persistence & tampering
   eachMatch(t, RE.persist, (m) => {
-    const sev = contextual('SG401', ctx, m.index, { docs: 2 }, m[0].length, false);
+    const line = lineAt(t, m.index, 600);
+    let sev = contextual('SG401', ctx, m.index, { docs: 2 }, m[0].length, false);
+    // A start-up location named in a list is not a write to it.
+    if (sev && /LaunchAgents|systemd|Startup/i.test(m[0]) && !RE.writeVerb.test(line)) sev = lower(sev, 2);
+    // `echo 'export NAME="value"' >> ~/.bashrc` is a routine setup step; only commands are persistence.
+    if (sev && /^\s*(echo|printf)\s+["']?export\s+[A-Za-z_]\w*=[^\n]*>>/.test(line) && !/\$\(|`|\b(curl|wget|eval|source|nohup|bash|sh|python3?|node)\b|https?:\/\//.test(line.replace(/\$PATH|\$HOME/g, ''))) sev = lower(sev, 2);
     if (sev) emit(ctx, 'SG401', m.index, sev, 'Makes code run again outside the agent session.');
   });
   if (k === 'code' || k === 'command')
@@ -384,7 +399,8 @@ export function scanUnit(unit: TextUnit): Finding[] {
   // SG205: actually reading credentials (or dumping the environment) and sending data out, in the same non-test file.
   if (k !== 'docs' && !isTestPath(unit.file)) {
     const secret = ctx.out.find((f) => (f.rule === 'SG203' || f.rule === 'SG204') && SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER.medium);
-    const send = ctx.out.find((f) => (f.rule === 'SG201' || f.rule === 'SG202') && SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER.medium);
+    // A POST to a hard-coded host in code is only "low" on its own — next to credential access it is the whole attack.
+    const send = ctx.out.find((f) => (f.rule === 'SG201' || f.rule === 'SG202') && SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER.low);
     if (secret && send) {
       ctx.out.push({ ...send, rule: 'SG205', severity: 'critical', title: RULE_BY_ID.get('SG205')!.title, message: `Reads secrets (line ${secret.line}) and sends data to a server (line ${send.line}) in the same file.` });
     }
