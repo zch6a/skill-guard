@@ -41,9 +41,9 @@ ${c.bold('Options')}
       --no-color         Disable colors
 
 ${c.bold('Examples')}
-  npx skill-guard                           scan every agent on this machine
-  npx skill-guard scan ./some-skill         check a skill before installing it
-  npx skill-guard scan . --sarif out.sarif  CI: scan a repository's agent config
+  skill-guard                               scan every agent on this machine
+  skill-guard scan ./some-skill             check a skill before installing it
+  skill-guard scan . --sarif out.sarif      CI: scan a repository's agent config
   skill-guard list --can auto,net           what runs by itself and talks to the network?
   skill-guard lock && skill-guard diff      get told when a plugin update adds a hook
 

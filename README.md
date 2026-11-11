@@ -1,8 +1,16 @@
 <div align="center">
 
-# 🛡 skill-guard
+<img src="assets/banner.svg" alt="skill-guard — Find what your AI agents will obey before they obey it." width="100%">
 
-**Find what your AI agents will obey before they obey it.**
+<p>
+<a href="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml/badge.svg"></a>
+<img alt="Node 22.15" src="https://img.shields.io/badge/node-%E2%89%A522.15-339933?logo=nodedotjs&logoColor=white">
+<img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-2ea44f">
+<img alt="36 rules" src="https://img.shields.io/badge/rules-36-orange">
+<a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
+
+**English** · [简体中文](README.zh-CN.md)
 
 Scans the **Skills**, **plugins**, **hooks** and **MCP servers** loaded by Claude Code, Codex, Cursor,
 OpenCode, DeepSeek Harness, Claude Desktop and VS Code for prompt injection, hidden instructions,
@@ -10,10 +18,8 @@ credential theft, download-and-run and persistence.
 
 Local · Deterministic · Zero dependencies · Nothing is executed or uploaded
 
-[English](README.md) · [简体中文](README.zh-CN.md)
-
 ```bash
-npx skill-guard
+npx github:zch6a/skill-guard
 ```
 
 </div>
@@ -37,7 +43,7 @@ You would not `curl | bash` a stranger's script. A skill gets the same access wi
 From the synthetic attack fixtures in [`test/helpers.ts`](test/helpers.ts):
 
 ```console
-$ npx skill-guard
+$ npx github:zch6a/skill-guard
 skill-guard 1.0.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
 
 ✖ CRITICAL  Claude Code hook  PostToolUse [*] from helpful-tools  ~/.claude/…/helpful-tools/hooks/hooks.json
@@ -111,8 +117,8 @@ Precision comes from context, not from ignoring things: a phrase in documentatio
 Point it at a folder to check a repository or a skill **before** you install or open it:
 
 ```bash
-npx skill-guard scan ./downloaded-skill
-npx skill-guard scan ~/code/some-repo     # .claude/, .mcp.json, .cursor/, AGENTS.md, plugins, skills…
+npx github:zch6a/skill-guard scan ./downloaded-skill
+npx github:zch6a/skill-guard scan ~/code/some-repo     # .claude/, .mcp.json, .cursor/, AGENTS.md, plugins, skills…
 ```
 
 ## What can my agents do?
@@ -187,7 +193,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '24' }
       # --trust-ignores: this is your own repository, so honour its skill-guard-ignore comments
-      - run: npx skill-guard scan . --trust-ignores --sarif skill-guard.sarif --fail-on high
+      - run: npx github:zch6a/skill-guard scan . --trust-ignores --sarif skill-guard.sarif --fail-on high
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with: { sarif_file: skill-guard.sarif }

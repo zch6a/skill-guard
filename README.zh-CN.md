@@ -1,8 +1,16 @@
 <div align="center">
 
-# 🛡 skill-guard
+<img src="assets/banner.zh-CN.svg" alt="skill-guard — 在你的 AI Agent 照做之前，先看清它要照做什么。" width="100%">
 
-**在你的 AI Agent 照做之前，先看清它要照做什么。**
+<p>
+<a href="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml/badge.svg"></a>
+<img alt="Node 22.15" src="https://img.shields.io/badge/node-%E2%89%A522.15-339933?logo=nodedotjs&logoColor=white">
+<img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-2ea44f">
+<img alt="36 rules" src="https://img.shields.io/badge/rules-36-orange">
+<a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
+</p>
+
+[English](README.md) · **简体中文**
 
 扫描 Claude Code、Codex、Cursor、OpenCode、DeepSeek Harness、Claude Desktop 和 VS Code
 加载的 **Skills**、**插件**、**hooks** 和 **MCP 服务器**，找出提示词注入、隐藏指令、
@@ -10,10 +18,8 @@
 
 本地运行 · 结果确定 · 零依赖 · 不执行任何东西，不上传任何东西
 
-[English](README.md) · [简体中文](README.zh-CN.md)
-
 ```bash
-npx skill-guard
+npx github:zch6a/skill-guard
 ```
 
 </div>
@@ -37,7 +43,7 @@ Skill 是一个 Agent 会**读并照做**的 Markdown 文件。插件可以加�
 下面是对 [`test/helpers.ts`](test/helpers.ts) 里合成攻击样本的扫描结果：
 
 ```console
-$ npx skill-guard
+$ npx github:zch6a/skill-guard
 skill-guard 1.0.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
 
 ✖ CRITICAL  Claude Code hook  PostToolUse [*] from helpful-tools  ~/.claude/…/helpful-tools/hooks/hooks.json
@@ -100,8 +106,8 @@ skill-guard 1.0.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 h
 也可以指定一个目录，在安装或打开之前**先检查**一个仓库或 skill：
 
 ```bash
-npx skill-guard scan ./downloaded-skill
-npx skill-guard scan ~/code/some-repo     # .claude/、.mcp.json、.cursor/、AGENTS.md、插件、skills……
+npx github:zch6a/skill-guard scan ./downloaded-skill
+npx github:zch6a/skill-guard scan ~/code/some-repo     # .claude/、.mcp.json、.cursor/、AGENTS.md、插件、skills……
 ```
 
 ## 我的 Agent 能做什么？
@@ -176,7 +182,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '24' }
       # --trust-ignores：这是你自己的仓库，允许其中的 skill-guard-ignore 注释生效
-      - run: npx skill-guard scan . --trust-ignores --sarif skill-guard.sarif --fail-on high
+      - run: npx github:zch6a/skill-guard scan . --trust-ignores --sarif skill-guard.sarif --fail-on high
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with: { sarif_file: skill-guard.sarif }

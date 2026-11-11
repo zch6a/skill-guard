@@ -17,7 +17,7 @@ From 1.0.0, skill-guard follows [Semantic Versioning](https://semver.org/). This
 
 ## Not frozen (can change in a minor release)
 
-- **What is found and how severe it is.** New rules, better patterns, fewer false positives, more recall. A minor update can turn up a finding that the previous version missed — that is the point. If your CI must be reproducible, pin the version (`npx skill-guard@1.2.3`) and update deliberately.
+- **What is found and how severe it is.** New rules, better patterns, fewer false positives, more recall. A minor update can turn up a finding that the previous version missed — that is the point. If your CI must be reproducible, pin the version (`npx github:zch6a/skill-guard#v1.2.3`) and update deliberately.
 - **Default severities** of individual rules, and how context (docs, tests, warnings, quotes) lowers them.
 - **Terminal and Markdown output.** They are for people; parse `--json` or SARIF instead.
 - **Capabilities** (`auto`, `net`, …): the set may grow; the detection behind each tag improves.
