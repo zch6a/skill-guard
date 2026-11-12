@@ -34,9 +34,17 @@ const cache = process.env.SKILL_GUARD_CORPUS || join(tmpdir(), 'skill-guard-corp
 const repos = JSON.parse(readFileSync(BASELINE, 'utf8')) as Repo[];
 
 function git(args: string[], cwd?: string): string {
-  // No hooks, no symlinks: the checkout is untrusted data.
-  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.symlinks=false', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  // No hooks, no symlinks: the checkout is untrusted data. Never wait for a password (a moved or private repository
+  // would otherwise hang the run), and give up on a stuck network after five minutes.
+  return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'core.symlinks=false', ...args], {
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  }).trim();
 }
+
+/** Progress on stderr with the time since start, so a slow or stuck step shows in CI logs. */
+const started = Date.now();
+const log = (msg: string) => process.stderr.write(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${msg}\n`);
 
 function checkout(r: Repo): string {
   const dir = join(cache, r.repo.replace('/', '__'));
@@ -52,9 +60,10 @@ function checkout(r: Repo): string {
     // empty repository
   }
   if (!head.startsWith(r.commit)) {
-    process.stderr.write(`fetching ${r.repo}@${r.commit}…\n`);
+    log(`fetching ${r.repo}@${r.commit}`);
     git(['fetch', '-q', '--depth', '1', 'origin', r.commit], dir);
     git(['checkout', '-q', '--force', 'FETCH_HEAD'], dir);
+    log(`fetched ${r.repo}`);
   }
   return dir;
 }
@@ -64,7 +73,11 @@ let failed = false;
 const rows: string[] = [];
 for (const r of repos) {
   const dir = checkout(r);
-  const result = scanItems(discoverPath(dir));
+  log(`discovering ${r.repo}`);
+  const items = discoverPath(dir);
+  log(`scanning ${items.length} items`);
+  const result = scanItems(items);
+  log(`scanned ${r.repo}`);
   const got = result.findings
     .filter((f) => atLeast(f.severity, MIN))
     .map((f) => `${f.rule} ${f.file ? relative(dir, f.file).replace(/\\/g, '/') : f.item}${f.line ? `:${f.line}` : ''}`)
