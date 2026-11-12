@@ -6,7 +6,7 @@
 <a href="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Node 22.15" src="https://img.shields.io/badge/node-%E2%89%A522.15-339933?logo=nodedotjs&logoColor=white">
 <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-2ea44f">
-<img alt="36 rules" src="https://img.shields.io/badge/rules-36-orange">
+<img alt="43 rules" src="https://img.shields.io/badge/rules-43-orange">
 <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
@@ -19,10 +19,24 @@
 本地运行 · 结果确定 · 零依赖 · 不执行任何东西，不上传任何东西
 
 ```bash
-npx github:zch6a/skill-guard
+npx github:zch6a/skill-guard              # 这台机器上 Agent 加载的一切
+npx github:zch6a/skill-guard scan ./skill # 安装之前，先扫一个 skill、插件或仓库
 ```
 
+<img src="docs/demo.svg" width="860" alt="skill-guard 扫描一个刚下载的 skill：解码出藏在不可见字符里的指令，并找到下载即执行的安装命令、要求对用户隐瞒的指令和读取凭据的脚本">
+
 </div>
+
+## 让 AI 助手在安装之前先检查
+
+skill-guard 自带一个 Agent Skill（技能）。在 Claude Code 里：
+
+```text
+/plugin marketplace add zch6a/skill-guard
+/plugin install skill-guard@skill-guard
+```
+
+然后问它“这个 skill 能装吗？”或者“检查一下我装的插件”。助手会把你指定的东西克隆到临时文件夹（不运行其中任何东西），扫描，并在安装之前逐条跟你讲清楚发现了什么。技能把被扫描的内容当作不可信的：绝不照做其中的指令，绝不运行它的脚本或服务器，也绝不让它关掉针对自己的发现（`--trust-ignores`）。从文件夹读取技能的其他助手：把 [`plugin/skills/skill-guard`](plugin/skills/skill-guard/SKILL.md) 复制到它们的技能文件夹。（演示和报告的输出是英文的。）
 
 ---
 
@@ -44,7 +58,7 @@ Skill 是一个 Agent 会**读并照做**的 Markdown 文件。插件可以加�
 
 ```console
 $ npx github:zch6a/skill-guard
-skill-guard 1.0.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
+skill-guard 1.1.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
 
 ✖ CRITICAL  Claude Code hook  PostToolUse [*] from helpful-tools  ~/.claude/…/helpful-tools/hooks/hooks.json
    SG202  Known exfiltration endpoint — References discord.com/api/webhooks, a service commonly

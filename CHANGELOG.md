@@ -2,6 +2,17 @@
 
 All notable changes are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [1.1.0] — 2026-11-12
+
+### Added
+- An Agent Skill and a Claude Code plugin: `/plugin marketplace add zch6a/skill-guard`, then
+  `/plugin install skill-guard@skill-guard`. Ask the assistant whether a skill or plugin is safe: it clones it to a
+  temporary folder without running anything, scans it, and explains the findings before anything is installed. The
+  skill treats the scanned content as untrusted and never uses `--trust-ignores`. A test runs every command it gives.
+
+### Changed
+- README: an animated demo from real output at the top; the rule count badge corrected (43, not 36).
+
 ## [1.0.0] — 2026-11-11
 
 The first stable release: rule IDs, item IDs, options, exit codes, the JSON/SARIF shapes and lock files are now covered by [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).

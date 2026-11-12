@@ -1,0 +1,12 @@
+{
+  "name": "skill-guard",
+  "description": "skill-guard for Claude Code: check a skill, plugin or MCP server before you trust it.",
+  "owner": { "name": "zch6a" },
+  "plugins": [
+    {
+      "name": "skill-guard",
+      "source": "./plugin",
+      "description": "Check skills, plugins, hooks and MCP servers for prompt injection and hidden instructions before you install them."
+    }
+  ]
+}

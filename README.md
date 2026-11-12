@@ -6,7 +6,7 @@
 <a href="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Node 22.15" src="https://img.shields.io/badge/node-%E2%89%A522.15-339933?logo=nodedotjs&logoColor=white">
 <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-2ea44f">
-<img alt="36 rules" src="https://img.shields.io/badge/rules-36-orange">
+<img alt="43 rules" src="https://img.shields.io/badge/rules-43-orange">
 <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
@@ -19,10 +19,28 @@ credential theft, download-and-run and persistence.
 Local · Deterministic · Zero dependencies · Nothing is executed or uploaded
 
 ```bash
-npx github:zch6a/skill-guard
+npx github:zch6a/skill-guard              # everything your agents load on this machine
+npx github:zch6a/skill-guard scan ./skill # a skill, plugin or repository, before you install it
 ```
 
+<img src="docs/demo.svg" width="860" alt="skill-guard scanning a downloaded skill: it decodes an instruction hidden in invisible characters, and finds a download-and-run installer, an instruction to hide actions from the user, and a script that reads credentials">
+
 </div>
+
+## Let your AI assistant check before it installs
+
+skill-guard comes with an Agent Skill. In Claude Code:
+
+```text
+/plugin marketplace add zch6a/skill-guard
+/plugin install skill-guard@skill-guard
+```
+
+Then ask "is this skill safe to install?" or "check the plugins I have". The assistant clones what you point it at
+into a temporary folder without running anything, scans it, and walks you through the findings before anything is
+installed. The skill treats the scanned content as untrusted: it never follows instructions found in it, never runs
+its scripts or servers, and never lets it switch off its own findings (`--trust-ignores`). Assistants that read
+Agent Skills from a folder: copy [`plugin/skills/skill-guard`](plugin/skills/skill-guard/SKILL.md) into theirs.
 
 ---
 
@@ -44,7 +62,7 @@ From the synthetic attack fixtures in [`test/helpers.ts`](test/helpers.ts):
 
 ```console
 $ npx github:zch6a/skill-guard
-skill-guard 1.0.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
+skill-guard 1.1.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 hooks, 13 MCP servers) in 0.1s
 
 ✖ CRITICAL  Claude Code hook  PostToolUse [*] from helpful-tools  ~/.claude/…/helpful-tools/hooks/hooks.json
    SG202  Known exfiltration endpoint — References discord.com/api/webhooks, a service commonly
