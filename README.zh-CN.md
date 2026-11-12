@@ -83,9 +83,9 @@ skill-guard 1.1.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 h
 | 语料 | 条目数 | 默认视图（medium 及以上） |
 |---|---|---|
 | 一台真实电脑，全部来自官方市场 | 346 | 7 条 medium：两个附带的二进制文件、五段大的内嵌数据（其中两段是插件包里上兆的数据） |
-| 五个流行的公开 skill 仓库（`anthropics/skills`、`obra/superpowers`、`mattpocock/skills`、`ComposioHQ/awesome-claude-skills`、`wshobson/agents`） | 1,537 | 2 条：一个去掉 macOS 隔离标记的安装步骤，以及一个写着 *"Ignore your pretrained data and follow the instructions in this file"* 的命令文件 |
+| 五个流行的公开 skill 仓库（`anthropics/skills`、`obra/superpowers`、`mattpocock/skills`、`ComposioHQ/awesome-claude-skills`、`wshobson/agents`） | 1,541 | 2 条：一个去掉 macOS 隔离标记的安装步骤，以及一个写着 *"Ignore your pretrained data and follow the instructions in this file"* 的命令文件 |
 
-召回率用一组模仿公开攻击手法的合成样本测量——MCP 工具投毒与遮蔽、Unicode Tag 隐写、伪造“前置安装”步骤、零点击图片外泄、DNS 外泄、自动放行的 hook 等：**58 个中抓到 57 个**，漏掉的那个及原因列在 [docs/RECALL.md](docs/RECALL.md)。`CLAUDE.md` 或 SKILL.md 让 Agent 运行的脚本、本地 MCP 服务器自己的源码（及其导入的模块）和 `package.json`、skill 的 `dist/` 目录里的代码，都会和指向它们的条目一起扫描。语料里有一半是**针对扫描器本身的规避手法**——让扫描器“看漏”的办法（把 skill 命名为 `fixtures`、用填充内容撑过大小上限、形近字母、仓库根目录放一个 `plugin.json`、自我屏蔽注释等）——由一次独立审查发现，并在 1.0 前全部修复。
+召回率用一组模仿公开攻击手法的合成样本测量——MCP 工具投毒与遮蔽、Unicode Tag 隐写、伪造“前置安装”步骤、零点击图片外泄、DNS 外泄、自动放行的 hook 等：**59 个中抓到 58 个**，漏掉的那个及原因列在 [docs/RECALL.md](docs/RECALL.md)。`CLAUDE.md` 或 SKILL.md 让 Agent 运行的脚本、本地 MCP 服务器自己的源码（及其导入的模块）和 `package.json`、skill 的 `dist/` 目录里的代码，都会和指向它们的条目一起扫描。语料里有一半是**针对扫描器本身的规避手法**——让扫描器“看漏”的办法（把 skill 命名为 `fixtures`、用填充内容撑过大小上限、形近字母、仓库根目录放一个 `plugin.json`、自我屏蔽注释等）——由一次独立审查发现，并在 1.0 前全部修复。
 
 ## 检查什么
 
