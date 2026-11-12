@@ -6,7 +6,7 @@
 <a href="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Node 22.15" src="https://img.shields.io/badge/node-%E2%89%A522.15-339933?logo=nodedotjs&logoColor=white">
 <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-2ea44f">
-<img alt="43 rules" src="https://img.shields.io/badge/rules-43-orange">
+<img alt="46 rules" src="https://img.shields.io/badge/rules-46-orange">
 <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
@@ -115,7 +115,27 @@ Recall is measured on a corpus of synthetic attacks modelled on published techni
 | ⚙️ **Agent settings** | Project `.claude/settings.json` that pre-approves commands (`Bash(*)`), turns on `bypassPermissions`, auto-enables MCP servers or redirects API traffic (`ANTHROPIC_BASE_URL`); `statusLine` / `apiKeyHelper` commands and prompt hooks are scanned like hooks |
 | 🧩 **Packaging** | Install scripts, bundled binaries, unrestricted `allowed-tools`, links that point outside an item, files too large to scan whole |
 
-43 rules, each with a *why* and a *fix*: [docs/RULES.md](docs/RULES.md) (starts with how to read a finding) or `skill-guard explain SG205`.
+### Packages that do not exist (`--check-registries`)
+
+AI models invent plausible package names, and the names end up in skills and READMEs as install steps. Whoever
+registers such a name first gets their code run by every agent and person that follows the step ("slopsquatting").
+Hooks that watch the command an agent is about to run do not see files that are only sitting in a repository;
+this does. With `--check-registries`, every package an install step names (`npm`/`pnpm`/`yarn`/`bun` install and
+add, `npx`, `pip`, `uv`, `uvx`, `pipx`, `poetry`) is looked up on npm or PyPI:
+
+- **SG901** the name is not on the registry (under an npm scope someone owns, it is a broken step rather than an
+  opening, and is reported as medium);
+- **SG902** it was first published less than 90 days ago, or (npm) had fewer than 50 downloads last week;
+- **SG903** npm removed it as malware.
+
+It sends only package names, to the registries, and is off by default. Run on five popular public skill
+repositories (2,955 files, 172 distinct packages, about 8 seconds), it found three install steps in one of them
+that name npm packages that do not exist: `@eslint/plugin-security` (the real one is `eslint-plugin-security`),
+`@sitespeed.io/sitespeed.io` (it is `sitespeed.io`) and `@zaproxy/action-baseline` (a GitHub Action, not an npm
+package), all under scopes their owners hold, so broken rather than exploitable; and no false alarm among the
+other names.
+
+46 rules, each with a *why* and a *fix*: [docs/RULES.md](docs/RULES.md) (starts with how to read a finding) or `skill-guard explain SG205`.
 
 Precision comes from context, not from ignoring things: a phrase in documentation, a test file, a fenced example, a quoted mention (`"ignore previous instructions"` as an example of what to resist) or a sentence that warns against it ("never read `~/.ssh`") is downgraded rather than shouted about.
 
@@ -236,7 +256,7 @@ Exit codes: `0` clean, `1` findings at or above `--fail-on`, `2` usage error.
 ## Limits — read this
 
 - **Static analysis.** skill-guard reads files; it never runs servers or scripts. It does not see tool descriptions that an MCP server sends at run time (use `lock`/`diff` and trust decisions for those) or code that a skill downloads later (it flags the download). Fetching `tools/list` would mean starting the server — running its code — so it is deliberately not done.
-- **Patterns, not proof.** A clean report means none of 43 rules matched, not that an item is safe. A determined attacker can phrase things no rule anticipates — exfiltration described in plain words with no file, command or URL is a known miss ([docs/RECALL.md](docs/RECALL.md)). Treat it as a fast, explainable first pass.
+- **Patterns, not proof.** A clean report means none of 46 rules matched, not that an item is safe. A determined attacker can phrase things no rule anticipates — exfiltration described in plain words with no file, command or URL is a known miss ([docs/RECALL.md](docs/RECALL.md)). Treat it as a fast, explainable first pass.
 - **Read-only and offline.** No telemetry, no network access, no LLM calls. Secrets found in configs are masked, and control characters from scanned files are neutralised, in all output.
 - **The scanned content is untrusted.** `skill-guard-ignore` comments and `.skill-guard.json` files inside what you scan are ignored unless you pass `--trust-ignores` (otherwise a malicious skill would simply ignore itself). Suppressions in `--config <file>` and `~/.config/skill-guard/config.json` always apply, and a suppressed count is always shown.
 

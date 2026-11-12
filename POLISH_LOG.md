@@ -114,3 +114,45 @@ The plan in PROGRESS.md: an entry point for AI coding assistants and a first scr
 - `docs/social-preview.png` (1280×640, from `scripts/social-card.html`); it has to be uploaded in the repository settings on the website.
 - The README badge said 36 rules; `skill-guard rules` lists 43. Fixed in both languages.
 - **The CI job "Precision on public skill repositories" had never finished on GitHub** (the first run hung for 6 hours; locally it takes 15–40 s). Instead of guessing, I added timestamped progress lines and a 15-minute limit and let it fail once: every repository was fetched in under a second, and it stopped forever at *discovering* `wshobson/agents`. Reproducing with an LF checkout on Windows did not hang, so it had to be Linux itself. Cause: `plugins/shell-scripting/agents/posix-shell-pro.md` says "Avoid `/dev/stdin`". Discovery follows scripts that Markdown points at in backticks; on Linux `/dev/stdin` exists and is no folder, so it was read to look for a shebang, and the read waited for input that never came. A real bug, not a CI quirk: any skill mentioning `/dev/stdin` hung `skill-guard scan` on Linux and macOS, which an attacker could use to make the check never finish. Fixed: only regular files are read (no devices or FIFOs), in `readText` and in script references. The same look showed a second problem: a backticked absolute path (`` `/home/you/bin/deploy` ``) made the scanner read that file and report it as part of the skill. Paths mentioned in a checked file are now followed only inside its folder tree or the scan root (hooks and MCP commands in configuration still resolve as the agent runs them). Tests for both (the device test runs the CLI with an open stdin and a 30 s limit, so a regression fails instead of hanging the suite); the folder test fails on the old code. The precision baseline is unchanged.
+
+## 1.2.0 — 2026-11-12: packages that do not exist (`--check-registries`)
+
+Where it comes from: project #13 (a guard against "slopsquatting", AI-invented package names that someone then
+registers) was planned as a tool of its own. Re-checking before starting found that the space had filled up: hooks
+such as ExactGround, slopgate-cli and slopcheck check the command an agent is about to run, and Socket and Aikido sell
+install firewalls. What none of them does is the way the case behind #13 spread: an invented npm name went through
+AI-written skill files into hundreds of repositories, files that just sit there until someone follows them. skill-guard
+already reads those files, so the check became part of it.
+
+- **Extraction (offline):** `src/registry.ts` finds the packages that install steps name in every text unit the
+  rules read (instructions, code, commands, docs): npm, pnpm, yarn, bun install/add, npx/bunx/pnpm dlx (only the
+  package, not its arguments), pip, `python -m pip`, uv pip/add/tool, uvx, pipx, poetry, pdm. Not packages: options and
+  their values, paths, URLs, git and file specs, archives, requirement files, placeholders (`<package>`,
+  `your-package`, `package@latest`, `myproject`), Turborepo's `@repo/…`.
+- **Measured on the five public skill repositories** before trusting it: the first run pulled 194 "names", and
+  reading them showed what the unit tests had not: shell comments (`npm install --legacy-peer-deps  # Ignore peer
+  deps` gave `ignore`, `peer`, `deps`), option values (`--jobs 4`, `--optional docs`), a name cut at the read limit
+  (`@radix-ui/react-t`), placeholders with a version (`package@latest`), and `>=` in a quoted version specifier taken
+  for a redirect. And one of my own: a filter meant for URLs dropped every name starting with "http" (`httpx`,
+  `httpie`). All fixed, each with a test; then 172 names, every one a real-looking package.
+- **Lookup (only with `--check-registries`):** npm downloads API first (a popular package's large document is never
+  fetched), then the registry document for its age, the security placeholder npm leaves for removed malware, and a
+  name whose versions were all unpublished; PyPI's JSON API for the first upload. Each name once, eight at a time,
+  15 s timeout. A network or registry error is said on stderr and never taken as "missing". Only names are sent
+  (tested against a local stand-in: no path or file name in any request; and with the option off, no request at
+  all).
+- **Rules:** SG901 not on the registry (high), SG902 first published under 90 days ago or under 50 npm downloads last
+  week (medium), SG903 removed by npm as malware (critical).
+- **Scopes, found on real data:** the online run on the corpus found three npm names that do not exist in
+  `wshobson/agents` (`@eslint/plugin-security`, `@sitespeed.io/sitespeed.io`, `@zaproxy/action-baseline`: the real
+  packages are `eslint-plugin-security`, `sitespeed.io`, and a GitHub Action). Under an npm scope only its owner can
+  publish, so the message must say whether the scope is owned. First try: the search API's `scope:` qualifier; it
+  answers 0 even for `@eslint`, and the report claimed all three scopes were "free to claim", which was wrong. The
+  registry's `/-/org/<scope>/package` listing answers for users and organisations alike (404 "Scope not found" when
+  nobody has it): with it, all three are reported correctly as broken steps under owned scopes (medium), not as
+  openings. No false alarm among the other 169 names; two real SG902s (a package 89 days old, one with 40 downloads).
+- The precision baseline (offline rules) is unchanged; the Agent Skill offers the option and says to ask first
+  (it sends package names out), written as prose so the skill test does not run it against the real registries.
+- Docs: README (both languages) with what it found, rule count 46, docs/RULES.md regenerated (an SG9 group).
+
+**Tests**: 138 (was 127).

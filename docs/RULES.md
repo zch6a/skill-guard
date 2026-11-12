@@ -390,3 +390,29 @@ Text and code files over 2 MB are scanned only at their first and last megabyte 
 The skill asks for unrestricted shell access (`allowed-tools: Bash` or `*`), so anything its instructions say can be executed without per-command approval.
 
 **Fix:** Scope it, e.g. `Bash(git status:*)`.
+
+## Packages that install steps name (--check-registries)
+
+### SG901 — Installs a package that does not exist
+
+**Default severity:** high
+
+The install step names a package that is not on its registry. AI models invent plausible package names, and the names end up in skills and READMEs as install steps; whoever registers such a name first gets their code run by every agent and person that follows the step ("slopsquatting").
+
+**Fix:** Find the real package (check the spelling against the project’s own docs), or remove the step. Do not register the name yourself to "fix" it.
+
+### SG902 — Installs a very new or barely used package
+
+**Default severity:** medium
+
+The package was first published less than 90 days ago, or (npm) had fewer than 50 downloads last week. A name that was made up and then registered by someone looks exactly like this, as does a brand-new legitimate project.
+
+**Fix:** Check who publishes it and that it is the package the project means (its repository, its maintainers, its age) before running the step.
+
+### SG903 — Installs a package removed as malware
+
+**Default severity:** critical
+
+npm removed the package for malware and keeps only a security placeholder under its name; an install step that names it was written for the malicious package.
+
+**Fix:** Remove the step, and check any machine that ran it.

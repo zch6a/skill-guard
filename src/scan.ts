@@ -87,6 +87,11 @@ function unitsFor(item: Item, skipped: ScanResult['skipped']): TextUnit[] {
   return units;
 }
 
+/** The text units of an item, as the rules read them (for checks that run after the scan, such as registry.ts). */
+export function itemUnits(item: Item): TextUnit[] {
+  return unitsFor(item, []);
+}
+
 /** The closest package.json from `dir` up to (and including) `stop`; none if `dir` is not under `stop`. */
 function nearestPackageJson(dir: string, stop: string): string | undefined {
   const rel = relative(stop, dir);
@@ -245,6 +250,26 @@ function scanItemsUncached(items: Item[], opts: ScanOptions): ScanResult & { sup
   }
   kept.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || a.item.localeCompare(b.item) || (a.line ?? 0) - (b.line ?? 0));
   return { items, findings: kept, capabilities, skipped, suppressed: hidden };
+}
+
+/**
+ * Findings made after the scan (the registry check), added the way the scan adds its own: one per rule, item, file
+ * and line, the same suppressions, the same order.
+ */
+export function mergeFindings(result: ScanResult & { suppressed: number }, extra: Finding[], opts: ScanOptions = {}): ScanResult & { suppressed: number } {
+  const seen = new Set(result.findings.map((f) => `${f.rule}|${f.item}|${f.file ?? ''}|${f.line ?? ''}`));
+  const texts = new Map<string, string[]>();
+  let hidden = result.suppressed;
+  const kept = [...result.findings];
+  for (const f of extra) {
+    const key = `${f.rule}|${f.item}|${f.file ?? ''}|${f.line ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if ((opts.inlineIgnores && inlineSuppressed(f, texts)) || (opts.suppressions && suppressed(f, opts.suppressions))) hidden++;
+    else kept.push(f);
+  }
+  kept.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity] || a.item.localeCompare(b.item) || (a.line ?? 0) - (b.line ?? 0));
+  return { ...result, findings: kept, suppressed: hidden };
 }
 
 /** Worst severity per item (items with no findings are absent). */

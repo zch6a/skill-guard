@@ -6,7 +6,7 @@
 <a href="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zch6a/skill-guard/actions/workflows/ci.yml/badge.svg"></a>
 <img alt="Node 22.15" src="https://img.shields.io/badge/node-%E2%89%A522.15-339933?logo=nodedotjs&logoColor=white">
 <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-2ea44f">
-<img alt="43 rules" src="https://img.shields.io/badge/rules-43-orange">
+<img alt="46 rules" src="https://img.shields.io/badge/rules-46-orange">
 <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
@@ -100,7 +100,17 @@ skill-guard 1.1.0 · scanned 22 items (3 skills, 2 plugins, 1 command/agent, 3 h
 | ⚙️ **Agent 设置** | 项目 `.claude/settings.json` 预先放行命令（`Bash(*)`）、开启 `bypassPermissions`、自动启用全部 MCP 服务器、或把 API 流量改道（`ANTHROPIC_BASE_URL`）；`statusLine` / `apiKeyHelper` 命令和 prompt 类 hook 会像 hook 一样扫描 |
 | 🧩 **打包** | 安装脚本、附带二进制文件、不受限的 `allowed-tools`、指向条目外部的链接、过大而无法完整扫描的文件 |
 
-共 43 条规则，每条都写明“为什么”和“怎么改”：[docs/RULES.md](docs/RULES.md)（开头讲了怎么读一条发现、各严重度意味着什么），或者运行 `skill-guard explain SG205`。
+### 不存在的软件包（`--check-registries`）
+
+AI 模型会编造看起来很像真的包名，这些名字又被写进技能和 README 的安装步骤里。谁先注册这个名字，谁的代码就会被每一个照着做的 Agent 和人运行（“slopsquatting”）。那些盯着 Agent 正要执行的命令的钩子，看不到只是放在仓库里的文件；这个检查看得到。加上 `--check-registries`，安装步骤里提到的每个包（`npm`/`pnpm`/`yarn`/`bun` 的 install 和 add、`npx`、`pip`、`uv`、`uvx`、`pipx`、`poetry`）都会去 npm 或 PyPI 上查：
+
+- **SG901** 注册表里没有这个名字（如果是在别人拥有的 npm 作用域下，那是一个坏掉的步骤而不是可被利用的漏洞，按中等报告）；
+- **SG902** 首次发布不到 90 天，或者（npm）上周下载不到 50 次；
+- **SG903** npm 已经把它当作恶意软件下架。
+
+它只把包名发给注册表，默认关闭。在 5 个热门公开技能仓库（2,955 个文件、172 个不同的包，约 8 秒）上运行，在其中一个仓库里发现了 3 个安装步骤提到了 npm 上不存在的包：`@eslint/plugin-security`（真正的是 `eslint-plugin-security`）、`@sitespeed.io/sitespeed.io`（应该是 `sitespeed.io`）、`@zaproxy/action-baseline`（那是 GitHub Action，不是 npm 包）——都在其所有者持有的作用域下，所以是坏掉的步骤而非可被利用的漏洞；其余名字没有一个误报。
+
+共 46 条规则，每条都写明“为什么”和“怎么改”：[docs/RULES.md](docs/RULES.md)（开头讲了怎么读一条发现、各严重度意味着什么），或者运行 `skill-guard explain SG205`。
 
 精度靠的是上下文，而不是视而不见：出现在文档、测试文件、代码示例块里的内容，被引号引用的提及（比如把 “ignore previous instructions” 当作要抵御的例子），以及“never read `~/.ssh`”这类警告语气的句子，都会降级处理，而不是大喊大叫。
 
@@ -221,7 +231,7 @@ jobs:
 ## 局限——请务必读一下
 
 - **静态分析。** skill-guard 只读文件，从不运行服务器或脚本。它看不到 MCP 服务器在运行时下发的工具描述（这部分请用 `lock`/`diff` 和你自己的信任判断），也看不到 skill 之后才下载的代码（但会标出下载行为）。获取 `tools/list` 就得先启动服务器——也就是运行它的代码——所以刻意不做。
-- **是模式匹配，不是证明。** 报告干净只说明 43 条规则都没命中，不代表一定安全。有心的攻击者总能写出规则没预料到的表述——比如用平常的话描述外泄、不出现文件名/命令/网址，这是已知的漏报（见 [docs/RECALL.md](docs/RECALL.md)）。请把它当作一道快速、可解释的初筛。
+- **是模式匹配，不是证明。** 报告干净只说明 46 条规则都没命中，不代表一定安全。有心的攻击者总能写出规则没预料到的表述——比如用平常的话描述外泄、不出现文件名/命令/网址，这是已知的漏报（见 [docs/RECALL.md](docs/RECALL.md)）。请把它当作一道快速、可解释的初筛。
 - **只读、离线。** 没有遥测，不联网，不调用任何大模型。配置里发现的密钥会打码，被扫描文件里的控制字符会被转义，所有输出都是如此。
 - **被扫描的内容不可信。** 被扫描内容里的 `skill-guard-ignore` 注释和 `.skill-guard.json` 默认不生效，除非加 `--trust-ignores`（否则恶意 skill 可以直接把自己屏蔽掉）。`--config <文件>` 和 `~/.config/skill-guard/config.json` 里的屏蔽规则始终生效，而且被屏蔽的数量总会显示出来。
 

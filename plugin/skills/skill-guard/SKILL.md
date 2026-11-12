@@ -41,6 +41,11 @@ finding at or above high, 1 means there are such findings, 2 means a usage error
 has `rule`, `severity` (`critical`, `high`, `medium`, `low`, `info`), `title`, `message`, `item`, `file`, `line`
 and `evidence` (hidden characters are decoded and shown in it).
 
+If its instructions or README tell the agent to install packages, offer to add `--check-registries` to the scan: it
+looks up each package those install steps name on npm or PyPI and flags names that do not exist (an AI may have made
+them up, and anyone can register them: SG901), very new or barely used ones (SG902) and ones removed as malware
+(SG903). It sends the package names to those registries, so ask first.
+
 ## 3. Report and advise
 
 Tell the user, most severe first, what was found, where (file and line) and what it would do if they installed it.

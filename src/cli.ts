@@ -6,8 +6,9 @@ import { c, plural, setColor } from './format.ts';
 import { annotateCapabilities, buildLock, defaultLockPath, diffLock, readLock, writeLock } from './lock.ts';
 import { parseJsonc } from './parse.ts';
 import { renderDiff, renderExplain, renderInventory, renderRules, renderTerminal, toJson, toMarkdown, toSarif } from './report.ts';
-import { scanItems, type Suppression } from './scan.ts';
-import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Capability, type Host, type Item, type ScanResult, type Severity } from './types.ts';
+import { checkRegistries, packageRefs } from './registry.ts';
+import { itemUnits, mergeFindings, scanItems, type Suppression } from './scan.ts';
+import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Capability, type Finding, type Host, type Item, type ScanResult, type Severity } from './types.ts';
 import { exists, home, isObject, prefetch, readText, takeTruncatedWalks, tildify, withFsCacheAsync } from './util.ts';
 import { VERSION } from './version.ts';
 
@@ -33,6 +34,9 @@ ${c.bold('Options')}
       --json             JSON report on stdout
       --sarif <file>     Write SARIF 2.1.0 (for GitHub code scanning); "-" for stdout
       --md               Markdown report (PR comments, CI summaries)
+      --check-registries Look up the packages that install steps name (npm, PyPI): flags names that do not exist
+                         (an AI invented them; anyone can register them), very new or barely used ones, and
+                         ones removed as malware. Sends only package names, to the registries; off by default
       --trust-ignores    Honour skill-guard-ignore comments and .skill-guard.json in the scanned files
                          (only for repositories you own: scanned content could otherwise ignore itself)
       --config <file>    Suppressions file (default: .skill-guard.json in the scanned folder or ~/.config/skill-guard/)
@@ -54,6 +58,7 @@ const OPTIONS = {
   host: { type: 'string', multiple: true },
   can: { type: 'string', multiple: true },
   'trust-ignores': { type: 'boolean' },
+  'check-registries': { type: 'boolean' },
   min: { type: 'string' },
   'fail-on': { type: 'string' },
   json: { type: 'boolean' },
@@ -158,10 +163,30 @@ async function load(v: Values, targets: string[]): Promise<Item[]> {
   return items;
 }
 
+/**
+ * `--check-registries`: the packages install steps name, looked up on npm and PyPI. A name that could not be
+ * looked up (no network, a registry error) is said on stderr, never taken as missing. SKILL_GUARD_NPM_REGISTRY,
+ * SKILL_GUARD_NPM_DOWNLOADS and SKILL_GUARD_PYPI point it at other registries (a mirror, or a test server).
+ */
+async function registryFindings(items: Item[]): Promise<Finding[]> {
+  const refs = packageRefs(items, itemUnits);
+  if (!refs.length) return [];
+  const env = process.env;
+  const r = await checkRegistries(refs, { npm: env.SKILL_GUARD_NPM_REGISTRY, npmDownloads: env.SKILL_GUARD_NPM_DOWNLOADS, pypi: env.SKILL_GUARD_PYPI });
+  console.error(c.dim(`registry check: ${plural(r.checked, 'package')} looked up (npm, PyPI)`));
+  if (r.failed.length) {
+    const list = r.failed.slice(0, 5).map((f) => `${f.name} (${f.reason})`).join(', ');
+    console.error(c.yellow(`warning: could not check ${plural(r.failed.length, 'package')}: ${list}${r.failed.length > 5 ? ', …' : ''}`));
+  }
+  return r.findings;
+}
+
 async function cmdScan(v: Values, targets: string[]): Promise<number> {
   const t0 = performance.now();
   const want = capabilityFilter(v);
-  const full = scanItems(await load(v, targets), { suppressions: loadSuppressions(v, targets), inlineIgnores: !!v['trust-ignores'] });
+  const scanOptions = { suppressions: loadSuppressions(v, targets), inlineIgnores: !!v['trust-ignores'] };
+  let full = scanItems(await load(v, targets), scanOptions);
+  if (v['check-registries']) full = mergeFindings(full, await registryFindings(full.items), scanOptions);
   const result = restrict(full, withCapabilities(full, want));
   const items = result.items;
   const elapsed = performance.now() - t0;

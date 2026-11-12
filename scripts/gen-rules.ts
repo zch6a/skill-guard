@@ -12,6 +12,7 @@ const groups: [string, string][] = [
   ['SG6', 'MCP servers'],
   ['SG7', 'Hooks'],
   ['SG8', 'Packaging'],
+  ['SG9', 'Packages that install steps name (--check-registries)'],
 ];
 
 const out = [

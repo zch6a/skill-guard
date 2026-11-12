@@ -2,6 +2,20 @@
 
 All notable changes are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [1.2.0] — 2026-11-12
+
+### Added
+- **`--check-registries`: packages that do not exist.** AI models invent package names, and the names end up in
+  skills and READMEs as install steps; whoever registers such a name gets their code run by everyone who follows the
+  step. With the option, every package an install step names (npm, pnpm, yarn, bun, npx; pip, uv, uvx, pipx,
+  poetry) is looked up on npm or PyPI: **SG901** not on the registry (medium under an npm scope its owner holds: a
+  broken step, not an opening), **SG902** first published less than 90 days ago or (npm) under 50 downloads last
+  week, **SG903** removed by npm as malware. Only package names are sent, to the registries; a name that could not
+  be looked up is reported on stderr and never taken as missing. Off by default.
+- On five popular public skill repositories it found three install steps naming npm packages that do not exist
+  (`@eslint/plugin-security`, `@sitespeed.io/sitespeed.io`, `@zaproxy/action-baseline`), with no false alarm among
+  the other 169 names.
+
 ## [1.1.0] — 2026-11-12
 
 ### Added
