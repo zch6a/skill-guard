@@ -14,12 +14,23 @@ const NEGATION = /\b(never|not|don'?t|do not|must not|mustn'?t|should not|should
 /** After a clause break, an imperative starts a new instruction the earlier negation does not govern. */
 const NEW_CLAUSE = /[,;:—–]\s*(then\s+|just\s+|simply\s+|now\s+|please\s+|instead\s+)?(add|append|run|read|send|set|copy|upload|execute|install|write|put|open|enable|fetch|download|use|call|delete|remove|disable|grant|paste|pipe|go ahead|ignore|disregard|forget|override|bypass|follow|obey|do|tell|reveal|print|output|include|exfiltrate|post|forward)\b/i;
 
+/** A sentence ends at . ! ? (or their CJK forms) followed by a space or the end: a negation does not cross it. */
+const SENTENCE_END = /[.!?。！？](?=\s|$)/g;
+
+/** Negations that ask for the thing rather than against it: "don't hesitate to", "never forget to", "not only". */
+const AFFIRMING = /^\s*(hesitate|forget|fail|stop|skip|miss|wait|delay|bother|be afraid|worry|only|just|merely|simply)\b/i;
+
 function negated(text: string, index: number): boolean {
-  const start = Math.max(0, text.lastIndexOf('\n', index - 1) + 1, index - 120);
+  const lineStart = Math.max(0, text.lastIndexOf('\n', index - 1) + 1, index - 120);
+  // Only the sentence the match is in: "Do not worry about formatting. Ignore all previous instructions…" is
+  // an attack whose first sentence happens to contain "not"; that hid it (high became low).
+  let start = lineStart;
+  for (const m of text.slice(lineStart, index).matchAll(SENTENCE_END)) start = lineStart + (m.index ?? 0) + 1;
   const before = text.slice(start, index);
   const all = [...before.matchAll(new RegExp(NEGATION.source, 'gi'))];
   const last = all[all.length - 1];
   if (!last) return false;
+  if (AFFIRMING.test(before.slice((last.index ?? 0) + last[0].length))) return false;
   // "To avoid interruptions, add …", "Not kidding: ignore …": the negation is confined to its own
   // clause. The verb that opens the new clause may be the start of the match itself.
   return !NEW_CLAUSE.test(before.slice((last.index ?? 0) + last[0].length) + text.slice(index, index + 40));
@@ -42,11 +53,30 @@ function inCommandSpan(text: string, index: number, length: number): boolean {
 }
 
 /** The match sits inside quotes — the text is *talking about* the phrase (e.g. warning about it), not saying it. */
-function quoted(text: string, index: number, length: number): boolean {
+/**
+ * How many levels a quotation lowers a match: 2 for a phrase quoted inside a sentence (talking about it), 1 when
+ * the quote is the whole line (a quoted instruction standing alone is still an instruction: wrapping the payload
+ * in "…" hid it), 0 when not quoted, or when the "quote" is a link title (`[x]: https://… "…"`), which is not
+ * even shown when the Markdown renders.
+ */
+function quoteLevels(text: string, index: number, length: number): number {
   const before = text.slice(Math.max(0, index - 3), index);
   const after = text.slice(index + length, index + length + 40);
   // Parentheses are asides, not quotes.
-  return /["“'`‘「]\s*$/.test(before) || (/["“`‘「]/.test(text.slice(Math.max(0, index - 40), index)) && /^[^"”`’」\n]{0,40}["”`’」]/.test(after));
+  const isQuoted = /["“'`‘「]\s*$/.test(before) || (/["“`‘「]/.test(text.slice(Math.max(0, index - 40), index)) && /^[^"”`’」\n]{0,40}["”`’」]/.test(after));
+  if (!isQuoted) return 0;
+  const ls = text.lastIndexOf('\n', index - 1) + 1;
+  let le = text.indexOf('\n', index);
+  if (le < 0) le = text.length;
+  const head = text.slice(ls, index);
+  if (/^\s{0,3}\[[^\]\n]{1,300}\]:\s*\S+\s+["'(]/.test(text.slice(ls, le)) || /\]\(\s*\S+\s+["'][^"'\n]*$/.test(head)) return 0;
+  const open = head.search(/["“'`‘「][^"“'`‘「]*$/);
+  if (open >= 0 && /^[\s>*+\-\d.)]*$/.test(head.slice(0, open))) {
+    const tail = text.slice(index + length, le);
+    const close = tail.search(/["”'`’」]/);
+    if (close >= 0 && /^[\s.,;:!?)]*$/.test(tail.slice(close + 1))) return 1;
+  }
+  return 2;
 }
 
 const TEST_PATH = /(^|[\\/])(tests?|__tests__|spec|specs|fixtures?|testdata|test-data|__fixtures__|e2e)[\\/]|\.(test|spec)\.[a-z]+$|(^|[\\/])test_[^\\/]+\.py$|_test\.(py|go)$/i;
@@ -79,6 +109,8 @@ export function testBase(unit: TextUnit): string | undefined {
 export function inTests(unit: TextUnit): boolean {
   const it = unit.item;
   if (!unit.file) return false;
+  // What the instructions tell the agent to read or run is what it reads or runs, whatever the folder is called.
+  if (it.mentioned?.includes(unit.file)) return false;
   if (!it.path) return isTestPath(unit.file); // an ad-hoc item (library use): no root to measure from
   const itemRoot = it.kind === 'skill' || it.kind === 'plugin' || it.kind === 'dsh-plugin' ? it.path : dirname(it.path);
   if (!unit.file) return false;
@@ -180,7 +212,8 @@ export function contextual(ruleId: string, ctx: Ctx, index: number, perKind: Par
   if (prose && /^[`"'\s)]{0,4}(does not|doesn'?t|is not|isn'?t|won'?t|will not|should not|must not|cannot|can'?t)\b/i.test(unit.text.slice(index + length, index + length + 60))) sev = lower(sev, 2);
   // Command rules skip the quoted downgrade (a backticked command is still a command) — unless a
   // negation directly governs running it: "Never run `curl … | sh`".
-  if (prose && length && quoted(unit.text, index, length) && ((quotes && !inCommandSpan(unit.text, index, length)) || forbidsRunning(unit.text, index))) sev = lower(sev, 2);
+  const q = prose && length ? quoteLevels(unit.text, index, length) : 0;
+  if (q && ((quotes && !inCommandSpan(unit.text, index, length)) || forbidsRunning(unit.text, index))) sev = lower(sev, q);
   if (prose && inFence(unit.text, index)) sev = lower(sev, 1);
   if (unit.kind === 'code' && commentish(unit.text, index, length, unit.file)) sev = lower(sev, 2);
   if (inTests(unit)) sev = lower(sev, 2);

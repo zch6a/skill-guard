@@ -17,8 +17,11 @@ export interface HiddenRun {
 const isTag = (cp: number) => cp >= 0xe0000 && cp <= 0xe007f;
 // Zero-width and other glyphless characters: ZW space/joiners, word joiner and invisible operators,
 // BOM, Mongolian vowel separator, soft hyphen, combining grapheme joiner, Hangul fillers.
+// Also: Khmer inherent vowels and Mongolian free variation selectors (render as nothing outside their script),
+// interlinear annotation marks, and the invisible musical formatting controls.
 const isZeroWidth = (cp: number) =>
-  cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0x2060 || cp === 0x2061 || cp === 0x2062 || cp === 0x2063 || cp === 0x2064 || cp === 0xfeff || cp === 0x180e || cp === 0x00ad || cp === 0x034f || cp === 0x115f || cp === 0x1160 || cp === 0x3164 || cp === 0xffa0;
+  cp === 0x200b || cp === 0x200c || cp === 0x200d || cp === 0x2060 || cp === 0x2061 || cp === 0x2062 || cp === 0x2063 || cp === 0x2064 || cp === 0xfeff || cp === 0x180e || cp === 0x00ad || cp === 0x034f || cp === 0x115f || cp === 0x1160 || cp === 0x3164 || cp === 0xffa0 ||
+  cp === 0x17b4 || cp === 0x17b5 || (cp >= 0x180b && cp <= 0x180d) || cp === 0x180f || (cp >= 0xfff9 && cp <= 0xfffb) || (cp >= 0x1d173 && cp <= 0x1d17a);
 const isAsciiLetter = (ch: string | undefined) => !!ch && /^[A-Za-z]$/.test(ch);
 const isBidi = (cp: number) => (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069) || cp === 0x200e || cp === 0x200f || cp === 0x061c;
 /** Variation selectors carry no visible glyph; long runs of them can encode bytes ("emoji smuggling"). */
@@ -78,7 +81,12 @@ export function findHidden(text: string): HiddenRun[] {
       const lenient = chars[0] === String.fromCharCode(0x200c) || chars[0] === String.fromCharCode(0x200d) || chars[0] === String.fromCharCode(0x00ad);
       const splitsWord = isAsciiLetter(text[run.index - 1]) && isAsciiLetter(text[run.index + run.length]);
       keep = count >= 2 || !lenient || splitsWord;
-    } else keep = count >= 3;
+    } else {
+      // Variation selectors: a run of three can encode bytes; a single one inside an ASCII word ("Ig<VS1>nore")
+      // exists only to split a keyword (emoji take one after the emoji, not between letters).
+      const splitsWord = isAsciiLetter(text[run.index - 1]) && isAsciiLetter(text[run.index + run.length]);
+      keep = count >= 3 || splitsWord;
+    }
     if (!keep) return;
     if (run.kind === 'tag' && tagText) run.decoded = tagText;
     runs.push(run);
@@ -98,12 +106,18 @@ const CONFUSABLE_PAIRS: [number, string][] = [
   [0x0391, 'A'], [0x0392, 'B'], [0x0395, 'E'], [0x0396, 'Z'], [0x0397, 'H'], [0x0399, 'I'], [0x039a, 'K'], [0x039c, 'M'], [0x039d, 'N'], [0x039f, 'O'], [0x03a1, 'P'], [0x03a4, 'T'], [0x03a5, 'Y'], [0x03a7, 'X'],
 ];
 const CONFUSABLE = new Map(CONFUSABLE_PAIRS.map(([cp, l]) => [String.fromCharCode(cp), l]));
-/** Fullwidth ASCII (U+FF01-FF5E) folds to ASCII. */
+/** Fullwidth ASCII (U+FF01-FF5E) and the mathematical letters and digits (U+1D400-1D7FF, "𝗜𝗴𝗻𝗼𝗿𝗲") fold to ASCII. */
 const fold = (ch: string) => {
-  const cp = ch.charCodeAt(0);
+  const cp = ch.codePointAt(0) ?? 0;
   if (cp >= 0xff01 && cp <= 0xff5e) return String.fromCharCode(cp - 0xfee0);
+  if (cp >= 0x1d400 && cp <= 0x1d7ff) {
+    const n = ch.normalize('NFKC');
+    if (/^[A-Za-z0-9]$/.test(n)) return n;
+  }
   return CONFUSABLE.get(ch) ?? ch;
 };
+/** Combining marks: "I\u0301gnore" reads as "Ignore" to a model; the skeleton drops them. */
+const isCombining = (cp: number) => cp >= 0x0300 && cp <= 0x036f;
 const isLatin = (ch: string) => /^[A-Za-z]$/.test(ch);
 
 /**
@@ -112,14 +126,32 @@ const isLatin = (ch: string) => /^[A-Za-z]$/.test(ch);
  * itself when there is nothing to fold (the usual case).
  */
 export function skeleton(text: string): string {
-  if (!/[\u00ad\u034f\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\u3164\ufeff\uffa0\u0370-\u03ff\u0400-\u052f\uff01-\uff5e]|[\udb40][\udc00-\udc7f]/.test(text)) return text;
+  return skeletonMap(text).text;
+}
+
+/** Anything the skeleton changes. Variation selectors and the supplementary ones (U+E0100-E01EF) included. */
+const NEEDS_SKELETON = /[\u00ad\u0300-\u036f\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u2069\u3164\ufe00-\ufe0f\ufeff\ufff9-\ufffb\uffa0\u0370-\u03ff\u0400-\u052f\uff01-\uff5e]|\udb40[\udc00-\uddef]|\ud835[\udc00-\udfff]|\ud834[\udd73-\udd7a]/;
+
+/**
+ * The skeleton, and for each of its UTF-16 positions the position in `text` it came from (one more entry for the
+ * end), so a finding in the skeleton can be reported at its real column.
+ */
+export function skeletonMap(text: string): { text: string; map: number[] | null } {
+  if (!NEEDS_SKELETON.test(text)) return { text, map: null };
   let out = '';
+  const map: number[] = [];
+  let i = 0;
   for (const ch of text) {
     const cp = ch.codePointAt(0) ?? 0;
-    if (kindOf(cp)) continue;
-    out += fold(ch);
+    if (!kindOf(cp) && !isCombining(cp)) {
+      const f = fold(ch);
+      out += f;
+      for (let k = 0; k < f.length; k++) map.push(i);
+    }
+    i += ch.length;
   }
-  return out;
+  map.push(text.length);
+  return { text: out, map };
 }
 
 /** Words that mix Latin letters with look-alike Cyrillic/Greek ones ("Ign\u043ere" with a Cyrillic \u043e). */

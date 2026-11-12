@@ -1,7 +1,7 @@
 import type { Finding, Severity, TextUnit } from '../types.ts';
 import { SEVERITY_ORDER } from '../types.ts';
-import { findHidden, mixedScriptWords, reveal, skeleton } from '../unicode.ts';
-import { lineAt } from '../util.ts';
+import { findHidden, mixedScriptWords, reveal, skeletonMap } from '../unicode.ts';
+import { lineAt, lineCol } from '../util.ts';
 import { RULE_BY_ID } from './catalog.ts';
 import { IMPERATIVE_NEAR, SHELL_FILE, contextual, eachMatch, emit, inFence, inTests, lower, type Ctx } from './context.ts';
 import { RE, findBlobs } from './patterns.ts';
@@ -14,16 +14,31 @@ import { normalizeShell } from './shell.ts';
  */
 export function scanUnit(unit: TextUnit): Finding[] {
   const out = scanText(unit);
-  const sk = skeleton(unit.text);
-  if (sk !== unit.text) {
+  const { text: sk, map } = skeletonMap(unit.text);
+  if (map && sk !== unit.text) {
     const seen = new Set(out.map((f) => `${f.rule}|${f.line ?? ''}`));
+    const offset = (unit.lineOffset ?? 1) - 1;
+    // Where each skeleton line starts, to turn a skeleton line/column back into an index.
+    const starts = [0];
+    for (let i = 0; i < sk.length; i++) if (sk.charCodeAt(i) === 10) starts.push(i + 1);
     for (const f of scanText({ ...unit, text: sk }, true)) {
       if (f.rule === 'SG103' || seen.has(`${f.rule}|${f.line ?? ''}`)) continue;
-      out.push({ ...f, message: `${f.message} (after removing hidden and look-alike characters)` });
+      const g = { ...f, message: `${f.message} (after removing hidden and look-alike characters)` };
+      // Columns of the original text, not of the skeleton (ten zero-width characters before a match moved it).
+      if (f.line !== undefined && f.column !== undefined) {
+        const at = (starts[f.line - offset - 1] ?? 0) + f.column - 1;
+        const pos = lineCol(unit.text, map[Math.min(at, map.length - 1)] ?? 0);
+        g.line = pos.line + offset;
+        g.column = pos.column;
+      }
+      out.push(g);
     }
   }
   return out;
 }
+
+/** A quoted phrase on one line: patterns accept any whitespace between words, a message shows single spaces. */
+const oneSpaced = (s: string) => s.replace(/\s+/g, ' ');
 
 /** Every `<!-- … -->` (an unclosed one runs to the end), in one linear pass. */
 function htmlComments(t: string, limit = 20): { index: number; body: string }[] {
@@ -62,7 +77,9 @@ function scanText(unit: TextUnit, derived = false): Finding[] {
           ? 'a bidirectional override (text displays in a different order than the model reads it)'
           : run.kind === 'zero-width'
             ? `${[...t.slice(run.index, run.index + run.length)].length} zero-width character(s)`
-            : `${[...t.slice(run.index, run.index + run.length)].length} variation selectors in a row (can smuggle bytes)`;
+            : [...t.slice(run.index, run.index + run.length)].length < 3
+              ? 'a variation selector inside a word (splits it so patterns miss it)'
+              : `${[...t.slice(run.index, run.index + run.length)].length} variation selectors in a row (can smuggle bytes)`;
     emit(ctx, 'SG103', run.index, sev, `Contains ${what}.`, reveal(lineAt(t, run.index, 200)));
   }
 
@@ -70,12 +87,12 @@ function scanText(unit: TextUnit, derived = false): Finding[] {
   if (prose)
     eachMatch(t, RE.override, (m) => {
       const sev = contextual('SG101', ctx, m.index, { docs: 2 }, m[0].length);
-      if (sev) emit(ctx, 'SG101', m.index, sev, `Tells the model to "${m[0].slice(0, 80)}".`);
+      if (sev) emit(ctx, 'SG101', m.index, sev, `Tells the model to "${oneSpaced(m[0]).slice(0, 80)}".`);
     });
   if (prose)
     eachMatch(t, RE.conceal, (m) => {
       const sev = contextual('SG102', ctx, m.index, { docs: 2 }, m[0].length);
-      if (sev) emit(ctx, 'SG102', m.index, sev, `Asks the model to keep something from the user: "${m[0].slice(0, 80)}".`);
+      if (sev) emit(ctx, 'SG102', m.index, sev, `Asks the model to keep something from the user: "${oneSpaced(m[0]).slice(0, 80)}".`);
     });
   // SG104 HTML comments, found with indexOf so length is no limit (padding a comment past a regex bound was a bypass).
   if (k === 'instructions')

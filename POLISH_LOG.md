@@ -156,3 +156,40 @@ already reads those files, so the check became part of it.
 - Docs: README (both languages) with what it found, rule count 46, docs/RULES.md regenerated (an SG9 group).
 
 **Tests**: 138 (was 127).
+
+## Cycle 2, round 1 — 1.3.0 (2026-11-12)
+
+The second cycle starts with an independent review, as PROGRESS.md asked: someone who had not written it, on
+synthetic files in a temp folder, with every home and agent folder variable pointed at a fake home and no network.
+It reproduced 16 problems; I reproduced each again on this working copy with the reviewer's scripts before fixing
+it, and ran them again after.
+
+- **Out of the tree.** The worst for a security tool: a symbolic link named in SKILL.md (`scripts/run.sh` pointing
+  at a file elsewhere) was read and its lines printed, in the same report as an SG804 saying the link is not followed;
+  and plugin.json `commands`/`skills`/`hooks` could point anywhere. The earlier fix ("follow mentioned paths only
+  inside the scanned tree") compared unresolved paths. Now one rule, by real location, for every path a scanned file
+  points at during a folder scan.
+- **Evasion.** A negation anywhere earlier on the line ("Do not worry about formatting. Ignore all previous
+  instructions…") lowered an attack two levels; patterns needed single ASCII spaces (a line break or a no-break space
+  hid the phrase); variation selectors, Khmer/Mongolian invisibles, maths letters and combining marks passed the
+  skeleton pass; the installers people actually paste (`bash -c "$(curl …)"`, `sh -c "$(wget -qO- …)"`, `| sudo -E
+  bash -`, `source <(curl …)`) and several `rm -rf ~` spellings were not matched; files named in SKILL.md with other
+  extensions, or given to an interpreter, were not scanned; a folder called `spec` lowered what the skill tells the
+  agent to read; a quoted payload was lowered as a "mention"; the middle of 2–64 MB files was never read.
+- **Output.** Escape sequences in hook events, matchers and commands reached the terminal; bidi overrides in file
+  names; the `--md` report rendered links, images and @mentions from skill names into PR comments; SARIF URIs were
+  not encoded (`#` cut the path); columns after hidden characters were off; bare-CR files had one line.
+- **False alarms** at high on ordinary skills (crontab in prose, "never mention the user's password", "quietly run
+  the formatter", `--force-with-lease`, a `<system>...</system>` placeholder) — each now a test that it stays quiet.
+- **CLI.** A SARIF path that cannot be written exited 1 (the findings code) with a stack trace; `--sarif - --json`
+  printed two documents.
+- Found while fixing: one pattern's match began with the newline before it, so the "is this a comment?" check
+  looked at the previous line (`#!`) and lowered `. <(curl …)` in a script; and SECURITY.md and the README still said
+  "no network access", untrue since `--check-registries` (1.2.0). Both fixed.
+- Kept on purpose (the review called them debatable): unquoted attack examples in a defensive document, and a vendor
+  one-liner in a fenced block, stay high: they are text an agent may follow.
+- **Engineering:** tests isolated from the real home folder (`test/isolate.ts`; the existing tests already passed
+  paths, a new test makes sure it stays so); CI actions pinned to commits, no token left in the checkout, no
+  dependency scripts; a release workflow that packs, installs and runs the package, and attaches it.
+
+Tests: 155 (was 138), each finding in `test/review2.test.ts`; recall 58 of 59 attack cases (one known gap, as before).

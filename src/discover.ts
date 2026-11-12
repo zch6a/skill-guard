@@ -1,7 +1,8 @@
+import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseFrontmatter, parseJsonc, parseToml } from './parse.ts';
 import type { Hook, Host, Item, ItemKind, McpServer } from './types.ts';
-import { exists, hasShebang, home, visible, isCodeFile, isDir, isFile, isObject, isTextFile, listDir, obj, readJson, readText, str, stringRecord, strings, walkFiles, withFsCache } from './util.ts';
+import { baseName, exists, hasShebang, home, visible, isCodeFile, isDir, isFile, isObject, isTextFile, listDir, obj, readJson, readText, str, stringRecord, strings, walkFiles, withFsCache } from './util.ts';
 
 /**
  * Discovery: find every skill, plugin, hook, MCP server and always-loaded
@@ -29,6 +30,28 @@ class Collector {
   }
 }
 
+/**
+ * While one folder is scanned (`discoverPath`): the paths that configs, manifests and instructions inside it point
+ * at are followed only inside it. Text in the folder is untrusted, and so is a hook command or a plugin.json:
+ * without this, `"commands": ["/home/me/notes"]` or a `scripts/run.sh` that links to `~/.ssh/config` made the scanner
+ * read a file outside the folder and print its lines in the report (and in SARIF uploaded by CI).
+ */
+let confineRoot: string | null = null;
+
+function realOf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/** `p` is inside `base`, or is `base`, by real location: a symbolic link out of the tree is out. */
+function within(p: string, base: string): boolean {
+  const rel = relative(realOf(base), realOf(p));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 // ------------------------------------------------------------------ skills
 
 /** Text files in a skill, scripts without an extension, and links that leave the folder. */
@@ -48,6 +71,13 @@ function addSkill(c: Collector, dir: string, host: Host, parent?: Item): void {
   const { files, outsideLinks } = skillFiles(dir);
   // Scripts SKILL.md tells the agent to run, even where the walk does not go (node_modules/, .venv/).
   const mentioned = scriptsMentioned(skillMd, dir);
+  // Files SKILL.md names (`spec/usage.md`, [guide](docs/guide.md)): what the agent is told to read or run is
+  // never "just a test file", whatever folder it is in.
+  const body = 'text' in r ? r.text.replace(/\\/g, '/') : '';
+  const named = files.filter((f) => {
+    const rel = relative(dir, f).replace(/\\/g, '/');
+    return rel.includes('/') && body.includes(rel);
+  });
   c.add({
     id: `${host}:skill:${parent ? parent.name + '/' : ''}${name}`,
     kind: 'skill',
@@ -55,6 +85,7 @@ function addSkill(c: Collector, dir: string, host: Host, parent?: Item): void {
     name,
     path: dir,
     files: [...new Set([...files, ...mentioned])],
+    mentioned: [...new Set([...mentioned, ...named])],
     ...(outsideLinks.length ? { outsideLinks } : {}),
     description: str(fm.description) || undefined,
     parent: parent?.id,
@@ -66,6 +97,8 @@ function addSkill(c: Collector, dir: string, host: Host, parent?: Item): void {
 function addSkillsUnder(c: Collector, root: string, host: Host, parent?: Item, depth = 4): void {
   if (!isDir(root)) return;
   const visit = (dir: string, d: number) => {
+    // In a folder scan, a skills folder (or a skill) linked in from outside it is not part of it.
+    if (confineRoot && !within(dir, confineRoot)) return;
     if (['SKILL.md', 'skill.md', 'Skill.md'].some((n) => exists(join(dir, n)))) {
       addSkill(c, dir, host, parent);
       return;
@@ -213,7 +246,9 @@ export function shellWords(s: string): string[] {
   return out;
 }
 
-const SCRIPT_EXT = /\.(sh|bash|zsh|fish|py|pyw|js|mjs|cjs|ts|mts|cts|ps1|psm1|cmd|bat|rb|pl|php|lua)$/i;
+const SCRIPT_EXT = /\.(sh|bash|zsh|fish|py|pyw|js|mjs|cjs|ts|mts|cts|ps1|psm1|cmd|bat|vbs|vbe|wsf|rb|pl|php|lua)$/i;
+/** A file given to one of these is a script whatever its name: `bash scripts/install.conf`, `python tools/setup`. */
+const INTERPRETER = /^(sudo|bash|sh|zsh|dash|ksh|fish|source|\.|python[0-9.]*|py|node|deno|bun|ruby|perl|php|lua|pwsh|powershell|cscript|wscript)(\.exe)?$/i;
 
 function referencedFiles(command: string | string[], base: string, pluginRoot?: string): string[] {
   const expand = (s: string) =>
@@ -223,13 +258,18 @@ function referencedFiles(command: string | string[], base: string, pluginRoot?: 
       .replace(/^~(?=[\\/])/, home());
   const tokens = Array.isArray(command) ? command.map(expand) : shellWords(expand(command));
   const out: string[] = [];
+  let runner = false;
   for (const tok of tokens) {
-    if (!tok || tok.startsWith('-')) continue;
+    if (!tok) continue;
+    if (tok.startsWith('-')) continue;
+    const byInterpreter = runner;
+    runner = INTERPRETER.test(baseName(tok));
     // resolve() normalises separators so the path matches what a directory walk returns
     const p = isAbsolute(tok) ? resolve(tok) : resolve(base, tok);
-    // A script by extension, or an extensionless file with a shebang (`./bin/setup`).
+    if (confineRoot && !within(p, confineRoot)) continue;
+    // A script by extension, a file given to an interpreter, or an extensionless file with a shebang (`./bin/setup`).
     // Regular files only: a device such as `/dev/stdin` exists, is no folder, and blocks a read forever.
-    if (isFile(p) && (SCRIPT_EXT.test(tok) || (/[\\/]/.test(tok) && hasShebang(p)))) out.push(p);
+    if (isFile(p) && (SCRIPT_EXT.test(tok) || (byInterpreter && /[\\/.]/.test(tok)) || (/[\\/]/.test(tok) && hasShebang(p)))) out.push(p);
   }
   return [...new Set(out)];
 }
@@ -292,7 +332,10 @@ function addSettingsHooks(c: Collector, path: string, host: Host, base: string):
 
 /** `"commands": "./custom"` or `["./a.md", "./more"]` in a plugin manifest, resolved against the plugin root. */
 function manifestPaths(v: unknown, root: string): string[] {
-  return strings(Array.isArray(v) ? v : [v]).map((p) => resolve(root, p));
+  // Only inside the plugin, by real location: a manifest is untrusted text, and agents resolve these against the root.
+  return strings(Array.isArray(v) ? v : [v])
+    .map((p) => resolve(root, p))
+    .filter((p) => within(p, root));
 }
 
 /** A Claude Code (`.claude-plugin/plugin.json`) or Codex (`.codex-plugin/plugin.json`) plugin and everything inside it. */
@@ -329,13 +372,13 @@ function addPlugin(c: Collector, root: string, host: Host, manifestPath: string)
     }
   }
   // hooks: hooks/hooks.json, or inline / referenced from the manifest
-  const hookFiles = [join(root, 'hooks', 'hooks.json'), ...strings([manifest.hooks]).map((p) => resolve(root, p))];
+  const hookFiles = [join(root, 'hooks', 'hooks.json'), ...manifestPaths(typeof manifest.hooks === 'string' ? manifest.hooks : [], root)];
   for (const hf of hookFiles) if (exists(hf)) addHooks(c, obj(readJson(hf)).hooks, host, hf, root, plugin, root);
   if (isObject(manifest.hooks)) addHooks(c, manifest.hooks, host, manifestPath, root, plugin, root);
   // MCP servers: .mcp.json, or inline in the manifest
   addMcpJson(c, join(root, '.mcp.json'), host, plugin);
   if (isObject(manifest.mcpServers)) addMcpServers(c, manifest.mcpServers, host, manifestPath, plugin);
-  else if (typeof manifest.mcpServers === 'string') addMcpJson(c, resolve(root, manifest.mcpServers), host, plugin);
+  else if (typeof manifest.mcpServers === 'string') for (const p of manifestPaths(manifest.mcpServers, root)) addMcpJson(c, p, host, plugin);
   // Scripts that a hook or MCP server points at are scanned as part of it, not again as part of the plugin.
   const owned = new Set(c.items.filter((i) => i.parent === plugin.id && (i.kind === 'hook' || i.kind === 'mcp-server')).flatMap((i) => i.files));
   plugin.files = plugin.files.filter((f) => !owned.has(f));
@@ -392,11 +435,8 @@ function scriptsMentioned(md: string, root?: string): string[] {
   const bases = [...new Set([dirname(md), root].filter((b): b is string => !!b))];
   // Text in a file being checked is untrusted: a path it mentions is followed only inside the file's own folder tree
   // (or the scan root), so `/etc/passwd` or `~/.ssh/config` in backticks never makes the scanner read it.
-  const inside = (f: string) =>
-    bases.some((b) => {
-      const rel = relative(resolve(b), f);
-      return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
-    });
+  // By real location: `scripts/run.sh` that is a link to a file elsewhere is not inside.
+  const inside = (f: string) => bases.some((b) => within(f, b) && realOf(f) !== realOf(b));
   const out = new Set<string>();
   for (const m of r.text.matchAll(/`([^`\n]{1,300})`|^\s*(?:\$\s+)?((?:bash|sh|zsh|python3?|node|pwsh|powershell|\.\/)[^\n]{0,300})$/gm)) {
     const span = m[1] ?? m[2] ?? '';
@@ -506,7 +546,13 @@ function discoverMachineUncached(opts: DiscoverOptions): Item[] {
  * about to open, a skill you are about to install, or a plugin checkout.
  */
 export function discoverPath(target: string): Item[] {
-  return withFsCache(() => discoverPathUncached(target));
+  const saved = confineRoot;
+  confineRoot = resolve(target);
+  try {
+    return withFsCache(() => discoverPathUncached(target));
+  } finally {
+    confineRoot = saved;
+  }
 }
 
 /** Instruction files agents load into every conversation in a repository. */

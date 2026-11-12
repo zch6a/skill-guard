@@ -1,7 +1,7 @@
 {
   "name": "skill-guard",
   "description": "Check skills, plugins, hooks and MCP servers for prompt injection, hidden instructions, credential theft and download-and-run code before you install or trust them. Static, local, nothing is run.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": {
     "name": "zch6a"
   },

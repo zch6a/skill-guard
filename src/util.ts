@@ -124,7 +124,18 @@ export function walkFiles(root: string, maxDepthOrOpts: number | WalkOptions = 6
     const rel = relative(rootReal, p);
     return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
   };
+  // Each real folder once: a folder linked inside the root and walked through its real path too is not scanned
+  // twice, and a link back up the tree cannot loop.
+  const seen = new Set<string>();
   const visit = (dir: string, depth: number) => {
+    let real = dir;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (seen.has(real)) return;
+    seen.add(real);
     const list = entries(dir);
     if (!list) return;
     const parent = baseName(dir).toLowerCase();
@@ -148,9 +159,13 @@ export function walkFiles(root: string, maxDepthOrOpts: number | WalkOptions = 6
           continue;
         }
         const st = stat(target);
-        // A linked folder inside the root is walked through its real path already (Codex keeps a
-        // `latest` junction next to the version it points at); following it would scan it twice.
-        if (st?.isDirectory()) continue;
+        // A linked folder inside the root (Codex keeps a `latest` junction next to the version it points at) is
+        // walked once, through whichever path comes first; its target may be in a folder the walk skips
+        // (`scripts` -> `node_modules/.cache/x`), so it must be followed, not assumed walked already.
+        if (st?.isDirectory()) {
+          if (depth < maxDepth) visit(p, depth + 1);
+          continue;
+        }
         // A linked file inside the root may point into a skipped folder (node_modules/): keep its target.
         if (st?.isFile() && (!o.filter || o.filter(target))) out.push(target);
         continue;
@@ -173,8 +188,10 @@ export function hasShebang(path: string): boolean {
 }
 
 /** Text extensions we scan. Binary assets (fonts, images) are not instructions or code. */
-const TEXT_EXT = /\.(md|mdx|markdown|txt|json|jsonc|ya?ml|toml|ini|cfg|py|pyw|js|mjs|cjs|ts|mts|cts|jsx|tsx|sh|bash|zsh|fish|ps1|psm1|bat|cmd|rb|pl|php|go|rs|lua|r|swift|kt|java|cs|html?|xml|svg|env|csv)$/i;
-const CODE_EXT = /\.(py|pyw|js|mjs|cjs|ts|mts|cts|jsx|tsx|sh|bash|zsh|fish|ps1|psm1|bat|cmd|rb|pl|php|go|rs|lua|r|swift|kt|java|cs)$/i;
+// Documentation formats an agent reads as easily as Markdown (reStructuredText, AsciiDoc, Org, Cursor rules), notebooks,
+// and Windows script hosts: a skill can tell the agent to read or run any of them.
+const TEXT_EXT = /\.(md|mdx|mdc|markdown|rst|adoc|asciidoc|org|tex|txt|json|jsonc|ipynb|ya?ml|toml|ini|cfg|conf|properties|py|pyw|pyi|js|mjs|cjs|ts|mts|cts|jsx|tsx|sh|bash|zsh|fish|ps1|psm1|psd1|bat|cmd|vbs|vbe|wsf|rb|pl|php|go|rs|lua|r|swift|kt|java|cs|html?|xml|svg|env|csv)$/i;
+const CODE_EXT = /\.(py|pyw|js|mjs|cjs|ts|mts|cts|jsx|tsx|sh|bash|zsh|fish|ps1|psm1|bat|cmd|vbs|vbe|wsf|rb|pl|php|go|rs|lua|r|swift|kt|java|cs)$/i;
 const NAMED_TEXT = /^(Makefile|Dockerfile|Justfile|\.?env(\..+)?|LICENSE|README)$/i;
 
 /** The last path segment, whatever the separator (a Windows path on Linux, a POSIX path on Windows). */
@@ -222,28 +239,51 @@ function readTextUncached(path: string): { text: string } | { skip: string } {
   }
 }
 
+/** Text and code files up to this size are scanned whole (in parts); larger ones only at their ends. */
+export const MAX_WHOLE_BYTES = 16 * 1024 * 1024;
+/** Larger than this: not read at all. */
+export const MAX_ANY_BYTES = 64 * 1024 * 1024;
+
 /**
- * For a text/code file over MAX_FILE_BYTES: its first and last megabyte, with the line each starts
- * on, so a payload appended after megabytes of padding is still seen. Files over 64 MB: nothing.
+ * A text/code file over MAX_FILE_BYTES, in parts of about a megabyte that start on a line (with the line each
+ * starts on), so nothing in the middle is skipped: a payload padded into the middle of a big file was missed when
+ * only the first and last megabyte were read. Over MAX_WHOLE_BYTES: only the first and last megabyte (`whole`
+ * false); over MAX_ANY_BYTES: nothing.
  */
-export function readEnds(path: string): { text: string; line: number }[] {
-  if (!isTextFile(path) && !isCodeFile(path)) return [];
+export function readParts(path: string): { parts: { text: string; line: number }[]; whole: boolean } {
+  if (!isTextFile(path) && !isCodeFile(path)) return { parts: [], whole: false };
   let buf: Buffer;
   try {
-    if ((stat(path)?.size ?? 0) > 64 * 1024 * 1024) return [];
+    if ((stat(path)?.size ?? 0) > MAX_ANY_BYTES) return { parts: [], whole: false };
     buf = readFileSync(path);
   } catch {
-    return [];
+    return { parts: [], whole: false };
   }
   const part = 1024 * 1024;
-  const head = buf.subarray(0, part).toString('utf8');
-  const tailStart = Math.max(part, buf.length - part);
+  const lineAt = (end: number) => {
+    let line = 1;
+    for (let i = 0; i < end; i++) if (buf[i] === 10) line++;
+    return line;
+  };
+  if (buf.length > MAX_WHOLE_BYTES) {
+    const tailStart = buf.length - part;
+    return { parts: [{ text: buf.subarray(0, part).toString('utf8'), line: 1 }, { text: buf.subarray(tailStart).toString('utf8'), line: lineAt(tailStart) }], whole: false };
+  }
+  const parts: { text: string; line: number }[] = [];
+  let start = 0;
   let line = 1;
-  for (let i = 0; i < tailStart; i++) if (buf[i] === 10) line++;
-  return [
-    { text: head, line: 1 },
-    { text: buf.subarray(tailStart).toString('utf8'), line },
-  ];
+  while (start < buf.length) {
+    let end = Math.min(buf.length, start + part);
+    // End on a newline when there is one in the last 64 KB, so a line is not cut in two; a single giant line is cut.
+    if (end < buf.length) {
+      const nl = buf.lastIndexOf(10, end - 1);
+      if (nl > end - 64 * 1024 && nl > start) end = nl + 1;
+    }
+    parts.push({ text: buf.subarray(start, end).toString('utf8'), line });
+    for (let i = start; i < end; i++) if (buf[i] === 10) line++;
+    start = end;
+  }
+  return { parts, whole: true };
 }
 
 /** Content hash used by lock files (sha256, first 32 hex chars). Changing it would invalidate every lock. */
@@ -272,6 +312,8 @@ function decodeText(buf: Buffer, path: string): { text: string } | { skip: strin
   if (buf.subarray(0, 8192).includes(0) && !isTextFile(path)) return { skip: 'binary' };
   let text = buf.toString('utf8');
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  // Old Mac line endings (a bare CR): read as newlines, same length, so lines are counted and frontmatter parsed.
+  if (text.includes('\r')) text = text.replace(/\r(?!\n)/g, '\n');
   return { text };
 }
 
@@ -394,7 +436,10 @@ export function tildify(raw: string): string {
  * terminal — an ESC sequence in a skill could erase or rewrite lines of the report about it.
  */
 export function visible(text: string): string {
-  return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029]/g, (ch) => '\\x' + ch.charCodeAt(0).toString(16).padStart(2, '0'));
+  return text
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029]/g, (ch) => '\\x' + ch.charCodeAt(0).toString(16).padStart(2, '0'))
+    // Bidirectional controls reorder what the terminal shows: a file "scripts/<U+202E>hs.txt" displays as "txt.sh".
+    .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, (ch) => `<U+${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}>`);
 }
 
 /** Mask anything that looks like a credential before it is printed (and neutralise control characters). */

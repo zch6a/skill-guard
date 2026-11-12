@@ -6,7 +6,7 @@ import type { ItemChange } from './lock.ts';
 import { RULE_BY_ID, RULES } from './rules.ts';
 import { itemRisk } from './scan.ts';
 import { HOST_LABELS, SEVERITY_ORDER, atLeast, type Capability, type Finding, type Item, type ScanResult, type Severity } from './types.ts';
-import { tildify } from './util.ts';
+import { tildify, visible } from './util.ts';
 import { VERSION } from './version.ts';
 
 const SEV_LABEL: Record<Severity, string> = { critical: 'CRITICAL', high: 'HIGH', medium: 'MEDIUM', low: 'LOW', info: 'INFO' };
@@ -56,7 +56,8 @@ function shortFile(item: Item, file?: string): string {
   // Hooks and MCP servers live in a config file; show their scripts relative to that file's folder.
   const base = /\.(json|toml|jsonc|md)$/i.test(item.path) || item.path.includes(' (') ? dirname(item.path.replace(/ \(.*\)$/, '')) : item.path;
   const rel = relative(base, file).replace(/\\/g, '/');
-  return rel && !rel.startsWith('../..') ? rel : tildify(file);
+  // A file name is untrusted text too (a name can hold an escape sequence or a bidi override on Linux).
+  return rel && !rel.startsWith('../..') ? visible(rel) : tildify(file);
 }
 
 export interface TerminalOptions {
@@ -91,7 +92,9 @@ export function renderTerminal(result: ScanResult, opts: TerminalOptions): strin
     const list = byItem.get(id)!.sort((a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity]);
     const limit = opts.verbose ? Infinity : 4;
     for (const f of list.slice(0, limit)) {
-      out.push(`   ${sevColor(f.severity)(pad(f.rule, 6))} ${c.bold(f.title)} ${c.dim('—')} ${f.message}`);
+      // Messages quote names from the scanned files (a hook's event, a server's name): visible() here as well, for
+      // the rules that build their message outside the text rules.
+      out.push(`   ${sevColor(f.severity)(pad(f.rule, 6))} ${c.bold(f.title)} ${c.dim('—')} ${visible(f.message)}`);
       const where = f.file ? `${shortFile(item, f.file)}${f.line ? `:${f.line}` : ''}` : '';
       if (where || f.evidence) out.push(`          ${c.dim(where)}${where && f.evidence ? '  ' : ''}${f.evidence ? fit(f.evidence, Math.max(30, cols - 14 - width(where))) : ''}`);
     }
@@ -120,9 +123,10 @@ export function renderTerminal(result: ScanResult, opts: TerminalOptions): strin
  * already on the evidence line, so they are named by event, matcher and owning plugin.
  */
 export function displayName(item: Item, byId?: Map<string, Item>): string {
-  if (!item.hook) return item.name;
+  // Names come from the scanned files (frontmatter, hook event keys, matchers, server names): never printed raw.
+  if (!item.hook) return visible(item.name);
   const owner = item.parent ? byId?.get(item.parent)?.name : undefined;
-  return `${item.hook.event}${item.hook.matcher ? ` [${item.hook.matcher}]` : ''}${owner ? ` from ${owner}` : ''}`;
+  return visible(`${item.hook.event}${item.hook.matcher ? ` [${item.hook.matcher}]` : ''}${owner ? ` from ${owner}` : ''}`);
 }
 
 /** "3 run automatically · 2 talk to the network · 1 reads credentials", or '' when nothing can do anything. */
@@ -168,7 +172,7 @@ function hookDetail(i: Item, byId: Map<string, Item>): string {
     .replace(/"([^"\s]*)"|'([^'\s]*)'/g, '$1$2')
     .replace(/\s+/g, ' ');
   const parent = i.parent ? byId.get(i.parent)?.name : undefined;
-  return fit(parent ? `${parent}: ${cmd}` : cmd, 50);
+  return fit(visible(parent ? `${parent}: ${cmd}` : cmd), 50);
 }
 
 /** `only`: show just these item ids (e.g. `--can`), while still resolving parents from the full list. */
@@ -190,9 +194,9 @@ export function renderInventory(result: ScanResult, only?: Set<string>): string 
     const caps = capsOf(i.id);
     for (const cap of caps) used.add(cap);
     const capText = caps.map((cap) => (cap === 'auto-runs' || cap === 'credentials' ? c.yellow(CAPABILITY_LABEL[cap]) : CAPABILITY_LABEL[cap])).join(' ');
-    const detail = i.hook ? hookDetail(i, byId) : i.mcp ? fit(i.mcp.url ?? [i.mcp.command ?? '', ...i.mcp.args].join(' '), 50) : fit((i.description ?? '').replace(/\s+/g, ' ').trim(), 50);
+    const detail = i.hook ? hookDetail(i, byId) : i.mcp ? fit(visible(i.mcp.url ?? [i.mcp.command ?? '', ...i.mcp.args].join(' ')), 50) : fit(visible((i.description ?? '').replace(/\s+/g, ' ').trim()), 50);
     // The owning plugin is already in the detail column for hooks.
-    const name = i.hook ? displayName({ ...i, parent: undefined }) : i.name;
+    const name = i.hook ? displayName({ ...i, parent: undefined }) : visible(i.name);
     out.push(`  ${pad(flag, 9)} ${pad(KIND_LABEL[i.kind], 12)} ${pad(fit(name, 36), 36)} ${pad(capText, 24)} ${c.dim(detail)}`);
   }
   if (used.size) {
@@ -217,18 +221,18 @@ export function renderDiff(changes: ItemChange[], lockPath: string): string {
   const out: string[] = [c.bold(`${plural(changes.length, 'change')} since ${tildify(lockPath)}`), ''];
   const icon = { added: c.green('+ new    '), removed: c.dim('- removed'), changed: c.yellow('~ changed') };
   for (const ch of changes) {
-    out.push(`${icon[ch.status]}  ${KIND_LABEL[ch.entry.kind]}  ${c.bold(ch.entry.name)}  ${c.dim(HOST_LABELS[ch.entry.host])}`);
+    out.push(`${icon[ch.status]}  ${KIND_LABEL[ch.entry.kind]}  ${c.bold(visible(ch.entry.name))}  ${c.dim(HOST_LABELS[ch.entry.host])}`);
     const caps = ch.capabilities;
     if (caps?.gained.length) out.push(`             ${c.yellow('now also: ' + caps.gained.map((x) => CAPABILITY_LABEL[x]).join(' '))}`);
     if (caps?.lost.length) out.push(`             ${c.dim('no longer: ' + caps.lost.map((x) => CAPABILITY_LABEL[x]).join(' '))}`);
     if (ch.status === 'added' && caps?.now.length) out.push(`             ${c.dim('can: ' + caps.now.map((x) => CAPABILITY_LABEL[x]).join(' '))}`);
-    if (ch.before !== undefined) out.push(`             ${c.red('was ' + fit(ch.before, 100))}\n             ${c.green('now ' + fit(ch.entry.summary ?? '', 100))}`);
+    if (ch.before !== undefined) out.push(`             ${c.red('was ' + fit(visible(ch.before), 100))}\n             ${c.green('now ' + fit(visible(ch.entry.summary ?? ''), 100))}`);
     // A hook's name already contains its command; only show the summary when it adds something.
-    else if (ch.status === 'added' && ch.entry.summary && !ch.entry.name.includes(ch.entry.summary)) out.push(`             ${c.dim(fit(ch.entry.summary, 100))}`);
+    else if (ch.status === 'added' && ch.entry.summary && !ch.entry.name.includes(ch.entry.summary)) out.push(`             ${c.dim(fit(visible(ch.entry.summary), 100))}`);
     if (ch.files) {
-      for (const f of ch.files.added.slice(0, 5)) out.push(`             ${c.green('+ ' + f)}`);
-      for (const f of ch.files.modified.slice(0, 5)) out.push(`             ${c.yellow('~ ' + f)}`);
-      for (const f of ch.files.removed.slice(0, 5)) out.push(`             ${c.dim('- ' + f)}`);
+      for (const f of ch.files.added.slice(0, 5)) out.push(`             ${c.green('+ ' + visible(f))}`);
+      for (const f of ch.files.modified.slice(0, 5)) out.push(`             ${c.yellow('~ ' + visible(f))}`);
+      for (const f of ch.files.removed.slice(0, 5)) out.push(`             ${c.dim('- ' + visible(f))}`);
     }
   }
   out.push('', c.dim('Review the changes, then run `skill-guard lock` to accept them.'));
@@ -249,9 +253,10 @@ const SECURITY_SEVERITY: Record<Severity, string> = { critical: '9.5', high: '8.
 /** SARIF 2.1.0 for GitHub code scanning and other CI dashboards. */
 export function toSarif(result: ScanResult, baseDir = process.cwd()): string {
   const itemsById = new Map(result.items.map((i) => [i.id, i]));
+  // A relative URI reference: each segment percent-encoded, or `my skill/a#b.sh` points at `my skill/a`.
   const uri = (file: string) => {
     const rel = relative(baseDir, file).replace(/\\/g, '/');
-    return rel && !rel.startsWith('..') ? rel : pathToFileURL(file).href;
+    return rel && !rel.startsWith('..') ? rel.split('/').map(encodeURIComponent).join('/') : pathToFileURL(file).href;
   };
   const sarif = {
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
@@ -292,6 +297,25 @@ export function toSarif(result: ScanResult, baseDir = process.cwd()): string {
   return JSON.stringify(sarif, null, 2);
 }
 
+/**
+ * Text from scanned files in a Markdown table cell. The report is posted as a PR comment, so it must not render
+ * what a skill author wrote: links, images and HTML are escaped, URLs defanged (`hxxps://`) so they are not
+ * auto-linked, and @mentions broken so nobody is pinged. Control characters are made visible as everywhere.
+ */
+export function mdText(s: string): string {
+  return visible(s)
+    .replace(/\r?\n/g, ' ')
+    .replace(/[\\`*_{}[\]()#+!|<>~]/g, '\\$&')
+    .replace(/\b(h)(ttps?|xxps?)(?=:\/\/)/gi, (_, h: string, rest: string) => `${h}xx${rest.replace(/^(tt|xx)/i, '')}`)
+    .replace(/\bwww\./gi, 'www[.]')
+    .replace(/@(?=[\w-])/g, '@\u200b');
+}
+
+/** A code span for a name or a path: nothing inside renders. Backticks inside become ʼ, pipes stay escaped. */
+function mdCode(s: string): string {
+  return `\`${visible(s).replace(/\r?\n/g, ' ').replace(/`/g, 'ʼ').replace(/\|/g, '\\|')}\``;
+}
+
 /** Markdown for PR comments and step summaries. */
 export function toMarkdown(result: ScanResult, min: Severity): string {
   const n = counts(result.findings);
@@ -308,9 +332,8 @@ export function toMarkdown(result: ScanResult, min: Severity): string {
   out.push('| Severity | Rule | Item | Location | Finding |', '|---|---|---|---|---|');
   for (const f of shown.slice(0, 200)) {
     const item = items.get(f.item);
-    const loc = f.file && item ? `\`${shortFile(item, f.file)}${f.line ? `:${f.line}` : ''}\`` : '';
-    const esc = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
-    out.push(`| ${f.severity} | ${f.rule} ${esc(f.title)} | ${esc(item ? `${KIND_LABEL[item.kind]} ${displayName(item, items)}` : f.item)} | ${loc} | ${esc(f.message)} |`);
+    const loc = f.file && item ? mdCode(`${shortFile(item, f.file)}${f.line ? `:${f.line}` : ''}`) : '';
+    out.push(`| ${f.severity} | ${f.rule} ${mdText(f.title)} | ${item ? `${KIND_LABEL[item.kind]} ${mdCode(displayName(item, items))}` : mdCode(f.item)} | ${loc} | ${mdText(f.message)} |`);
   }
   if (shown.length > 200) out.push('', `…and ${shown.length - 200} more.`);
   return out.join('\n');

@@ -5,7 +5,7 @@ import { capabilitiesOf } from './capabilities.ts';
 import { toolDescriptions } from './tooldesc.ts';
 import type { Capability, Finding, Item, ScanResult, Severity, TextUnit, UnitKind } from './types.ts';
 import { SEVERITY_ORDER } from './types.ts';
-import { digest, exists, hasShebang, isCodeFile, isObject, readEnds, readJson, readText, walkFiles, withFsCache } from './util.ts';
+import { digest, exists, hasShebang, isCodeFile, isObject, MAX_ANY_BYTES, MAX_WHOLE_BYTES, readJson, readParts, readText, walkFiles, withFsCache } from './util.ts';
 
 export interface Suppression {
   rule: string;
@@ -66,12 +66,17 @@ function unitsFor(item: Item, skipped: ScanResult['skipped']): TextUnit[] {
   for (const file of item.files) {
     const r = readText(file);
     if (!('text' in r)) {
-      skipped.push({ file, reason: r.skip });
-      // Padding a script past the size limit must not hide it: scan its ends (findings keep real line numbers).
+      // Padding a file past the size limit must not hide anything in it: up to 16 MB it is scanned whole, in
+      // parts (findings keep real line numbers); larger, only its first and last megabyte, and that is reported.
       if (r.skip.startsWith('larger')) {
         const kind = item.kind === 'hook' ? 'code' : unitKindFor(item, file, named);
-        for (const part of readEnds(file)) units.push({ item, file, kind, text: part.text, lineOffset: part.line });
+        const { parts, whole } = readParts(file);
+        for (const part of parts) units.push({ item, file, kind, text: part.text, lineOffset: part.line });
+        if (whole) continue;
+        skipped.push({ file, reason: parts.length ? `larger than ${MAX_WHOLE_BYTES / 1024 / 1024} MB` : `larger than ${MAX_ANY_BYTES / 1024 / 1024} MB` });
+        continue;
       }
+      skipped.push({ file, reason: r.skip });
       continue;
     }
     const kind = item.kind === 'hook' ? 'code' : unitKindFor(item, file, named);
@@ -216,7 +221,7 @@ function scanItemsUncached(items: Item[], opts: ScanOptions): ScanResult & { sup
     // Files too large to scan whole are reported, never silently passed over.
     for (const s of skipped.slice(skippedBefore).filter((x) => x.reason.startsWith('larger'))) {
       const partial = units.some((u) => u.file === s.file);
-      own.push({ rule: 'SG805', severity: 'low', title: RULE_BY_ID.get('SG805')!.title, message: partial ? 'Larger than 2 MB: only its first and last megabyte were scanned.' : 'Too large to scan (over 64 MB).', item: item.id, file: s.file });
+      own.push({ rule: 'SG805', severity: 'medium', title: RULE_BY_ID.get('SG805')!.title, message: partial ? `Larger than ${MAX_WHOLE_BYTES / 1024 / 1024} MB: only its first and last megabyte were scanned.` : `Too large to scan (over ${MAX_ANY_BYTES / 1024 / 1024} MB).`, item: item.id, file: s.file });
     }
     for (const unit of units) {
       // The content is part of the key: two tool descriptions on one line must not share a result.

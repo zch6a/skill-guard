@@ -377,9 +377,9 @@ A symbolic link inside a skill or plugin that points outside it makes a "local" 
 
 ### SG805 — File not fully scanned
 
-**Default severity:** low
+**Default severity:** medium
 
-Text and code files over 2 MB are scanned only at their first and last megabyte (over 64 MB, not at all). Vendored bundles are usually the reason — but padding a script with megabytes of filler is also a way to push a payload out of reach.
+Text and code files are scanned whole up to 16 MB; larger ones only at their first and last megabyte, and over 64 MB not at all. Vendored bundles are usually the reason — but padding a script with megabytes of filler is also a way to push a payload out of reach, so it is shown by default.
 
 **Fix:** Check what the file is. A skill rarely needs a multi-megabyte script.
 

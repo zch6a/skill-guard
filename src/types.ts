@@ -66,6 +66,8 @@ export interface Item {
   scanRoot?: string;
   /** Symbolic links inside the item that point outside it (not followed). */
   outsideLinks?: string[];
+  /** Files the item's instructions name (to read or run): never treated as test files. */
+  mentioned?: string[];
 }
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';

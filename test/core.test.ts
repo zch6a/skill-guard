@@ -473,7 +473,8 @@ describe('cli', () => {
       // Markdown summarises capabilities and names hooks by event.
       const md = (await cli(['scan', root, '--md', '--min', 'info'])).out;
       assert.match(md, /\*\*What they can do:\*\* 1 runs automatically · 3 ship code · 1 talks to the network · 2 write files/);
-      assert.match(md, /hook Stop \|/);
+      // Names from the scanned files are code spans in Markdown: nothing in them renders.
+      assert.match(md, /hook `Stop` \|/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

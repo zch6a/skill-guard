@@ -182,6 +182,10 @@ async function registryFindings(items: Item[]): Promise<Finding[]> {
 }
 
 async function cmdScan(v: Values, targets: string[]): Promise<number> {
+  // One document on stdout: `--sarif - --json` printed two JSON documents back to back (not parseable), and
+  // `--md --json` dropped the Markdown without a word.
+  const onStdout = [v.json && '--json', v.md && '--md', v.sarif === '-' && '--sarif -'].filter(Boolean);
+  if (onStdout.length > 1) throw new UsageError(`${onStdout.join(' and ')} both write to stdout; pick one${v.sarif === '-' ? ' (or write SARIF to a file with --sarif <file>)' : ''}.`);
   const t0 = performance.now();
   const want = capabilityFilter(v);
   const scanOptions = { suppressions: loadSuppressions(v, targets), inlineIgnores: !!v['trust-ignores'] };
@@ -195,7 +199,15 @@ async function cmdScan(v: Values, targets: string[]): Promise<number> {
   if (v.sarif) {
     const sarif = toSarif(result, targets[0] ? resolve(targets[0]) : process.cwd());
     if (v.sarif === '-') process.stdout.write(sarif + '\n');
-    else writeFileSync(v.sarif, sarif);
+    else {
+      // Exit 1 means "findings": a SARIF file that cannot be written is an error (2), so CI can tell them apart.
+      try {
+        writeFileSync(v.sarif, sarif);
+      } catch (e) {
+        console.error(c.red(`Could not write ${v.sarif}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`));
+        return 2;
+      }
+    }
   }
   if (v.json) process.stdout.write(toJson(result) + '\n');
   else if (v.md) process.stdout.write(toMarkdown(result, min) + '\n');

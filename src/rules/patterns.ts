@@ -53,15 +53,54 @@ export const LITERALS: Record<string, string[]> = {
   persist: ['.bash', '.zsh', '.zprofile', '.profile', 'config.fish', '$profile', 'crontab', 'schtasks', 'register-scheduledtask', 'reg', 'currentversion', 'launchctl', 'launchagents', 'systemctl', 'systemd', 'startup'],
 };
 
+/**
+ * A prose pattern written with single spaces, made to accept any whitespace between words: runs of spaces, tabs,
+ * no-break and other Unicode spaces, and a line break (which Markdown renders as a space). "Ignore all previous\n
+ * instructions" and "previous<NBSP>instructions" read the same to a model and slipped past a literal space.
+ * Spaces inside character classes are left alone; a space with its own quantifier (` ?`) becomes one `\s`.
+ */
+function ws(re: RegExp): RegExp {
+  let out = '';
+  let inClass = false;
+  const s = re.source;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i] as string;
+    if (ch === '\\') {
+      out += ch + (s[i + 1] ?? '');
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (ch === ']') inClass = false;
+      out += ch;
+      continue;
+    }
+    if (ch === '[') {
+      inClass = true;
+      out += ch;
+      continue;
+    }
+    if (ch === ' ') {
+      out += /[?*+{]/.test(s[i + 1] ?? '') ? '\\s' : '\\s+';
+      continue;
+    }
+    out += ch;
+  }
+  return new RegExp(out, re.flags);
+}
+
 export const RE = {
-  override: /\b(ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}\b(all |any |the |your |previous |prior |above |earlier |preceding |system |safety |original )+(instructions?|prompts?|rules|guidelines|directives|messages|context|policies)\b|\byou are now (?:in )?(?:a |an )?(?:different|new|unrestricted|jailbroken|developer mode|dan)\b|\b(here is|this is|below is|follow) (your|the) new system prompt\b|\bnew system prompt\s*[:：]|\byour new instructions are\b|忽略(之前|以上|前面|所有)的?(指令|提示|规则|指示)/i,
-  conceal: /\b(do not|don'?t|never|must not)\s+(tell|inform|notify|alert|show|mention|reveal|disclose|let)\s+(the |this )?(user|human|operator|developer)\b(?!,? (that )?(they|you) (need|needs|should|must|have to|ought))|\b(do not|don'?t|never|must not)\s+(tell|inform|mention|reveal|disclose|say)\b[^.\n]{0,60}?\bto (the |this )?(user|human)\b|\bwithout (the user|the human|anyone|them) (knowing|noticing|seeing|being told|asking)\b|\b(silently|secretly|covertly|quietly|stealthily)\s+(send|upload|post|run|execute|install|copy|exfiltrate|forward|read|collect|delete|modify)\b|\bhide (this|it|these|the) (from|output|step|action)|不要(告诉|通知|让)用户|偷偷(地)?(发送|上传|执行|运行|读取)/i,
+  override: ws(/\b(ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}\b(all |any |the |your |previous |prior |above |earlier |preceding |system |safety |original )+(instructions?|prompts?|rules|guidelines|directives|messages|context|policies)\b(?! and (start|begin) (fresh|over|again|anew)\b)|\byou are now (?:in )?(?:a |an )?(?:different|new|unrestricted|jailbroken|developer mode|dan)\b|\b(here is|this is|below is|follow) (your|the) new system prompt\b|\bnew system prompt\s*[:：]|\byour new instructions are\b|忽略(之前|以上|前面|所有)的?(指令|提示|规则|指示)/i),
+  // "Never mention the user's password", "do not tell the user a test passed unless you saw it" and "quietly run the
+  // formatter" are care and honesty, not concealment: a possessive, an unless/until condition, and "quietly" with an
+  // ordinary verb are left alone. "Hide … from the user" is concealment; "hide the output of noisy commands" is not.
+  conceal: ws(/\b(do not|don'?t|never|must not)\s+(tell|inform|notify|alert|show|mention|reveal|disclose|let)\s+(the |this )?(user|human|operator|developer)\b(?!['’]s\b)(?!,? (that )?(they|you) (need|needs|should|must|have to|ought))(?![^.\n]{0,80}\b(unless|until)\b)|\b(do not|don'?t|never|must not)\s+(tell|inform|mention|reveal|disclose|say)\b(?![^.\n]{0,80}\b(unless|until)\b)[^.\n]{0,60}?\bto (the |this )?(user|human)\b|\bwithout (the user|the human|anyone|them) (knowing|noticing|seeing|being told|asking)\b|\b(silently|secretly|covertly|stealthily)\s+(send|upload|post|run|execute|install|copy|exfiltrate|forward|read|collect|delete|modify)\b|\bquietly\s+(send|upload|post|copy|exfiltrate|forward|collect)\b|\bhide (this|it|these|that|the [\w ]{1,30}?) from (the |this )?(user|human|operator|developer|reviewer)s?\b|不要(告诉|通知|让)用户|偷偷(地)?(发送|上传|执行|运行|读取)/i),
   // Words that make a hidden comment an instruction rather than an authoring note.
-  imperative: /\b(you must|ignore (all|previous|the|any)|disregard|send (the|all|it|this)|upload|exfiltrate|curl\s|wget\s|execute|run (this|the following|`)|do not (tell|mention|show)|system prompt|secret|password|api[_ ]?key|token|credentials?)\b/i,
-  trigger: /\b(always|must) (use|invoke|load|activate|trigger|call) (this|me) (skill|tool|agent|plugin)\b|\b(use|invoke|trigger|activate|load) (this|me)( skill| tool| plugin)? (for|on|in|before) (all|every|any)( other| single)? (requests?|tasks?|messages?|prompts?|conversations?|quer(y|ies)|questions?|turns?)\b|\b(before|instead of) (any|every|all) other (skills?|tools?|plugins?)\b|\b(top|highest|absolute) priority (skill|tool|plugin)\b/i,
-  remoteInstr: /\b(fetch|download|load|read|retrieve|get|pull|follow|obey|execute)\b[^.\n]{0,40}\b(instructions?|rules|prompts?|directives|commands|tasks?|playbook)\b[^.\n]{0,30}\b(from|at|hosted at|located at)\s+(https?:\/\/|[a-z0-9-]+\.[a-z]{2,}\/)/i,
+  imperative: ws(/\b(you must|ignore (all|previous|the|any)|disregard|send (the|all|it|this)|upload|exfiltrate|curl\s|wget\s|execute|run (this|the following|`)|do not (tell|mention|show)|system prompt|secret|password|api[_ ]?key|token|credentials?)\b/i),
+  trigger: ws(/\b(always|must) (use|invoke|load|activate|trigger|call) (this|me) (skill|tool|agent|plugin)\b|\b(use|invoke|trigger|activate|load) (this|me)( skill| tool| plugin)? (for|on|in|before) (all|every|any)( other| single)? (requests?|tasks?|messages?|prompts?|conversations?|quer(y|ies)|questions?|turns?)\b|\b(before|instead of) (any|every|all) other (skills?|tools?|plugins?)\b|\b(top|highest|absolute) priority (skill|tool|plugin)\b/i),
+  remoteInstr: ws(/\b(fetch|download|load|read|retrieve|get|pull|follow|obey|execute)\b[^.\n]{0,40}\b(instructions?|rules|prompts?|directives|commands|tasks?|playbook)\b[^.\n]{0,30}\b(from|at|hosted at|located at)\s+(https?:\/\/|[a-z0-9-]+\.[a-z]{2,}\/)/i),
   // A real block (`<system>…</system>`) or chat-template token — a bare `<system>` is usually a placeholder argument.
-  impersonate: /<\s*(system|system_prompt|sys)\s*>[\s\S]{1,600}?<\s*\/\s*(system|system_prompt|sys)\s*>|<\|(system|im_start\|>system)\|?>|^\s*\[\s*SYSTEM( MESSAGE| PROMPT)?\s*\]|\bthis (is|message is) (an? )?(official|verified) (message|instruction|notice|update) from (anthropic|openai|claude|codex|deepseek|cursor)\b|\b(i am|this is) (anthropic|openai|the system administrator|your (developer|operator))\b/im,
+  impersonate: /<\s*(system|system_prompt|sys)\s*>(?!\s*(?:\.{2,}|…)\s*<)[\s\S]{1,600}?<\s*\/\s*(system|system_prompt|sys)\s*>|<\|(system|im_start\|>system)\|?>|^\s*\[\s*SYSTEM( MESSAGE| PROMPT)?\s*\]|\bthis (is|message is) (an? )?(official|verified) (message|instruction|notice|update) from (anthropic|openai|claude|codex|deepseek|cursor)\b|\b(i am|this is) (anthropic|openai|the system administrator|your (developer|operator))\b/im,
   // Flags and config values that switch approvals off. Mode *names* in prose are only flagged when used as an instruction.
   noApprovalFlag: /--dangerously-skip-permissions\b|\bdangerouslyDisableSandbox["']?\s*[:=]\s*true|["']?(defaultMode|permissionMode|permission_mode)["']?\s*[:=]\s*["']?bypassPermissions|\bsandbox(_mode)?["']?\s*[:=]\s*["']?danger-full-access|\bapproval[_-]policy["']?\s*[:=]\s*["']?never\b|\s--yolo\b|\s--full-auto\b|--permission-mode[\s=]+bypassPermissions/i,
   hookAllow: /["']permissionDecision["']\s*:\s*["']allow["']|["']decision["']\s*:\s*["']approve["']/i,
@@ -73,7 +112,7 @@ export const RE = {
   // SG104: text styled to be invisible when an SVG or HTML snippet renders.
   hiddenElement: /<(text|tspan|span|div|p|foreignObject)\b[^>]{0,300}?(font-size\s*[:=]\s*["']?0(\.0+)?(px|pt|em)?["';\s>]|opacity\s*[:=]\s*["']?0(\.0+)?["';\s>]|display\s*:\s*none|visibility\s*:\s*hidden)[^>]{0,300}>([^<]{0,2000})/gi,
   // Tool shadowing: instructions about how to use some *other* tool.
-  shadowTool: /\bwhen (the )?[`"']?[\w.-]+[`"']? tool is (available|used|called|present)\b[^.\n]{0,80}\b(must|always|instead|also)\b|\bwhen(ever)? (using|calling|you use|you call|invoking) (the )?[`"']?[\w.-]+[`"']? tool\b[^.\n]{0,120}\b(always|must|instead|also|first)\b|\b(before|after) (using|calling) (any|every|the [`"']?[\w.-]+[`"']?) (other )?tools?\b[^.\n]{0,80}\b(always|must|first)\b/i,
+  shadowTool: ws(/\bwhen (the )?[`"']?[\w.-]+[`"']? tool is (available|used|called|present)\b[^.\n]{0,80}\b(must|always|instead|also)\b|\bwhen(ever)? (using|calling|you use|you call|invoking) (the )?[`"']?[\w.-]+[`"']? tool\b[^.\n]{0,120}\b(always|must|instead|also|first)\b|\b(before|after) (using|calling) (any|every|the [`"']?[\w.-]+[`"']?) (other )?tools?\b[^.\n]{0,80}\b(always|must|first)\b/i),
   /** A copy of messages sent to an address: "add x@y.com as BCC", "cc all emails to x@y.com". */
   shadowCopy: /\b(bcc|blind[- ]?copy|carbon[- ]?copy|cc)\b|\b(send|forward) a copy\b/i,
   // Bounded by RFC limits (local part ≤ 64, label ≤ 63) so a long run without "@" stays linear.
@@ -93,7 +132,7 @@ export const RE = {
   dnsExfil: /(?<=^|[\s;&|(`])(nslookup|dig|host|ping|getent\s+hosts)\s+[^\n;{}=]{0,80}?\$\([^)]{0,400}\)[^\s"']{0,300}\.[a-z0-9-]+\.[a-z]{2,}/im,
   // Settings that widen what an agent may do without asking.
   permissionWidening: /permissions\.allow|["']allow["']\s*:\s*\[|\bBash\(\s*\*?\s*\)|\bBash\(\*\)|\benableAllProjectMcpServers\b|\bautoApprove\b|\balwaysAllow\b|\ballowed[_-]?tools\b[^\n]{0,20}\*/i,
-  noApprovalWords: /\bbypassPermissions\b|\bdanger-full-access\b|\byolo mode\b|\bauto[- ]?approve (all|every|everything)\b|\bskip (all )?(permission|approval|confirmation) (prompts?|checks?)\b|\b(don'?t|do not|never) ask (the user )?(for )?(permission|approval|confirmation)\b/i,
+  noApprovalWords: ws(/\bbypassPermissions\b|\bdanger-full-access\b|\byolo mode\b|\bauto[- ]?approve (all|every|everything)\b|\bskip (all )?(permission|approval|confirmation) (prompts?|checks?)\b|\b(don'?t|do not|never) ask (the user )?(for )?(permission|approval|confirmation)\b/i),
   netSend: /\bcurl\b[^\n|;&]{0,400}?(\s-(d|F|T)\b|\s--(data(-binary|-raw|-urlencode)?|form|upload-file|json)\b|-X\s*(POST|PUT))|\bwget\b[^\n]{0,400}--post-(data|file)|\b(Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^\n]{0,400}-(Method\s+(Post|Put)|Body|InFile)\b|\brequests\.(post|put|patch)\s*\(|\bhttpx\.(post|put)\s*\(|\baxios\.(post|put)\s*\(|\bfetch\s*\([^)]{0,400}?\bmethod\s*:\s*['"`](POST|PUT)|\burllib\.request\.(urlopen|Request)\s*\([^)]{0,400}data\s*=|\b(nc|ncat|netcat|socat)\s+-?[a-z]*\s*\d{1,3}(\.\d{1,3}){3}|\bscp\s+[^\n]{0,400}\S+@\S+:|\bsend (it|them|this|the (results?|data|contents?|files?|keys?|tokens?|output)) to\s+(https?:\/\/|\S+@\S+\.)|\b(upload|post|exfiltrate|forward) (it|them|this|the [\w ]{1,30}) to\s+https?:\/\//i,
   exfilHost: /\b(webhook\.site|requestbin\.(?:com|net)|pipedream\.net|[a-z0-9-]{1,63}\.ngrok(?:-free)?\.(?:io|app|dev)|ngrok\.io|burpcollaborator\.net|oastify\.com|[a-z0-9]{1,63}\.oast\.(?:fun|live|pro|site|me|online)|interact\.sh|discord(?:app)?\.com\/api\/webhooks|hooks\.slack\.com\/services|api\.telegram\.org\/bot|pastebin\.com\/api|transfer\.sh|file\.io|0x0\.st|requestcatcher\.com|beeceptor\.com|canarytokens\.com)/i,
   secretFiles: /(~|\$HOME|%USERPROFILE%|\$env:USERPROFILE|\/home\/\w+|\/Users\/\w+|C:\\Users\\\w+)?[\\/]?\.(ssh[\\/]|aws[\\/]credentials|azure[\\/]|kube[\\/]config|docker[\\/]config\.json|netrc\b|npmrc\b|pypirc\b|git-credentials\b|gnupg[\\/]|config[\\/]gh[\\/]hosts\.ya?ml|config[\\/]gcloud[\\/]|claude[\\/]\.credentials\.json|codex[\\/]auth\.json|dsh[\\/]\.credentials\.ya?ml)|\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)|\bwallet\.dat\b|\b(metamask|exodus|electrum|phantom)\b[^\n]{0,30}\b(vault|wallet|keystore|seed)\b|User Data[\\/](Default|Profile \d+)[\\/](Login Data|Cookies|Web Data)|\b(Cookies\.sqlite|key4\.db|logins\.json)\b|\/etc\/(shadow|sudoers)\b|Library[\\/]Keychains[\\/]|\bsecurity find-(generic|internet)-password\b|\bseed phrase\b/i,
@@ -103,15 +142,17 @@ export const RE = {
   envDump: /\bprintenv\s*(?:$|[|>;&])|\bGet-ChildItem\s+env:\s*(?:$|[|>])|\bgci\s+env:\s*(?:$|[|>])|json\.dumps\(\s*(dict\()?\s*os\.environ\b|\bprint\(\s*(dict\()?\s*os\.environ\s*\)|JSON\.stringify\(\s*process\.env\s*[,)]|console\.log\(\s*process\.env\s*\)|\[Environment\]::GetEnvironmentVariables\(\)\s*(\||$)/m,
   /** The bare `env` command, only meaningful in shell context (in Python/JS `env` is just a variable name). */
   shellEnv: /(?:^|[;&|]\s*|\$\(\s*)env\s*(?:\||>|$)/m,
-  dlExec: /\b(curl|wget)\b[^\n|]{0,400}\|\s*(sudo\s+)?(ba|z|da|k)?sh\b|\b(curl|wget)\b[^\n|]{0,400}\|\s*(sudo\s+)?(python3?|node|perl|ruby|php)\b|\b(iwr|irm|Invoke-WebRequest|Invoke-RestMethod|\(New-Object\s+(System\.)?Net\.WebClient\)\.DownloadString)\b[^\n]{0,400}\|\s*(iex|Invoke-Expression)\b|\b(iex|Invoke-Expression)\s*\(?\s*\(?\s*(New-Object\s+(System\.)?Net\.WebClient\)\.DownloadString|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)|\b(ba)?sh\s+<\(\s*(curl|wget)\b|\beval\s+"?\$\(\s*(curl|wget)\b|\bpython3?\s+-c\s+["']?\$\(\s*(curl|wget)/i,
+  // Piped into a shell (through `tee`/`cat`, `sudo -E`, `env`), `bash -c "$(curl …)"` (Homebrew), `sh -c "$(wget -qO- …)"`
+  // (oh-my-zsh), `source <(curl …)`, and download-then-run (`curl -o f URL && sh f`).
+  dlExec: /\b(curl|wget)\b[^\n|]{0,400}(\|\s*(tee|cat|grep|sed|head)\b[^\n|]{0,200})*\|\s*(sudo(\s+-[A-Za-z]+)*\s+|env\s+)?(ba|z|da|k)?sh\b|\b(curl|wget)\b[^\n|]{0,400}(\|\s*(tee|cat)\b[^\n|]{0,200})*\|\s*(sudo(\s+-[A-Za-z]+)*\s+|env\s+)?(python3?|node|perl|ruby|php)\b|\b(ba|z|da|k)?sh\s+-c\s+["']?\$\(\s*(curl|wget)\b|(\bsource|(?<![^\s;&|(`])\.)\s+<\(\s*(curl|wget)\b|\b(curl|wget)\b[^\n]{0,400}\s(-o|--output|-O)\s+["']?(?<dl>[\w./-]{1,200})["']?[^\n]{0,400}?(&&|;)\s*(sudo\s+)?((ba|z|da|k)?sh|python3?|node|bash)\s+["']?(\.\/)?\k<dl>(?![\w./-])|\b(iwr|irm|Invoke-WebRequest|Invoke-RestMethod|\(New-Object\s+(System\.)?Net\.WebClient\)\.DownloadString)\b[^\n]{0,400}\|\s*(iex|Invoke-Expression)\b|\b(iex|Invoke-Expression)\s*\(?\s*\(?\s*(New-Object\s+(System\.)?Net\.WebClient\)\.DownloadString|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)|\b(ba)?sh\s+<\(\s*(curl|wget)\b|\beval\s+"?\$\(\s*(curl|wget)\b|\bpython3?\s+-c\s+["']?\$\(\s*(curl|wget)/i,
   encodedExec: /\b(powershell|pwsh)(\.exe)?\b[^\n]{0,400}\s-(e|ec|en|enc|enco|encod|encode|encodedcommand)\s+[A-Za-z0-9+/=]{20,}|\bbase64\s+(-d|--decode|-D)\b[^\n]{0,400}\|\s*(ba|z)?sh\b|\b(exec|eval)\s*\(\s*(base64\.b64decode|codecs\.decode|bytes\.fromhex|zlib\.decompress|marshal\.loads)|\beval\s*\(\s*atob\s*\(|\b(new\s+)?Function\s*\(\s*atob\s*\(|\bFromBase64String\b[^\n]{0,200}\b(iex|Invoke-Expression)\b|\b(iex|Invoke-Expression)\b[^\n]{0,200}\bFromBase64String\b|\beval\s*\(\s*Buffer\.from\([^)]{0,400}['"]base64['"]\)/i,
   remoteEval: /\b(exec|eval)\s*\(\s*(requests\.get|urllib\.request\.urlopen|urlopen|httpx\.get)\s*\(|\b(eval|new\s+Function|Function)\s*\(\s*await\s*\(?\s*(await\s+)?fetch\s*\(|\bvm\.runIn\w*Context\s*\(\s*await\s+fetch|\bimport\s*\(\s*['"`]https?:\/\//i,
-  persist: /(>>?|tee\s+-a|Add-Content|Out-File[^\n]{0,400}-Append|echo[^\n]{0,400}>>)\s*["']?(~|\$HOME|\$env:USERPROFILE)?[\\/]?\.(bashrc|bash_profile|zshrc|zprofile|profile|config[\\/]fish[\\/]config\.fish)\b|\$PROFILE\b[^\n]{0,400}(Add-Content|Set-Content|Out-File|>>)|(Add-Content|Set-Content|Out-File)[^\n]{0,400}\$PROFILE\b|\bcrontab\s+(-[lr]\s*\|.*|-\s*$|[^-\s][^\n]{0,400})|\(crontab\s+-l|\bschtasks(\.exe)?\s+\/create\b|\bRegister-ScheduledTask\b|\breg(\.exe)?\s+add\s+["']?HK(CU|LM)[^\n]{0,400}\\(Run|RunOnce)\b|\b(New|Set)-ItemProperty\b[^\n]{0,400}\\CurrentVersion\\Run\b|\blaunchctl\s+(load|bootstrap)\b|Library[\\/]LaunchAgents[\\/]|\bsystemctl\s+--user\s+(enable|start)\b|\.config[\\/]systemd[\\/]user[\\/]|Start Menu[\\/]Programs[\\/]Startup/i,
+  persist: /(>>?|tee\s+-a|Add-Content|Out-File[^\n]{0,400}-Append|echo[^\n]{0,400}>>)\s*["']?(~|\$HOME|\$env:USERPROFILE)?[\\/]?\.(bashrc|bash_profile|zshrc|zprofile|profile|config[\\/]fish[\\/]config\.fish)\b|\$PROFILE\b[^\n]{0,400}(Add-Content|Set-Content|Out-File|>>)|(Add-Content|Set-Content|Out-File)[^\n]{0,400}\$PROFILE\b|\bcrontab\s+(-[lr]\s*\|.*|-\s*$|["']?(~|\/|\.{1,2}\/|\$)[^\s"']{1,400}|["']?[\w.-]{1,200}\.(cron|crontab|tab|txt|conf)\b)|\(crontab\s+-l|\bschtasks(\.exe)?\s+\/create\b|\bRegister-ScheduledTask\b|\breg(\.exe)?\s+add\s+["']?HK(CU|LM)[^\n]{0,400}\\(Run|RunOnce)\b|\b(New|Set)-ItemProperty\b[^\n]{0,400}\\CurrentVersion\\Run\b|\blaunchctl\s+(load|bootstrap)\b|Library[\\/]LaunchAgents[\\/]|\bsystemctl\s+--user\s+(enable|start)\b|\.config[\\/]systemd[\\/]user[\\/]|Start Menu[\\/]Programs[\\/]Startup/i,
   agentConfig: /(\.claude[\\/]settings(\.local)?\.json|\.claude\.json\b|\.codex[\\/]config\.toml|\.cursor[\\/]mcp\.json|claude_desktop_config\.json|[\\/]hooks[\\/]hooks\.json|\.mcp\.json\b|\.dsh[\\/](cordis|profiles)|\bCLAUDE\.md\b|\bAGENTS\.md\b)/,
   writeVerb: /\b(writeFile(Sync)?|appendFile(Sync)?|createWriteStream|open\s*\([^)]{0,400}['"](w|a)\+?b?['"]|\.write_text|\.write\(|Set-Content|Add-Content|Out-File|sed\s+-i|tee\b|cp\s|mv\s|Copy-Item|Move-Item|echo\b[^\n]{0,400}>|>\s*["']?[~$\w./\\-]*)/,
   // Writing into .git/hooks or pointing hooksPath somewhere. `core.hooksPath=/dev/null` *disables* hooks and is defensive.
   gitHooks: /\.git[\\/]hooks[\\/]|core\.hooksPath(?![\s=,"']+(\/dev\/null|NUL|""|''))/,
-  destructive: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)[a-zA-Z]*\s+(--no-preserve-root\s+)?(\/(\s|$|\*)|~\/?(\s|$|\*)|\$HOME\/?(\s|$|\*)|\/\*|\.\.\/\.\.)|\bRemove-Item\b[^\n]{0,400}-Recurse[^\n]{0,400}(\s(C:\\|~\\?\s|\$env:USERPROFILE\\?\s|\$HOME\b))|\b(del|erase)\s+\/[sq]\s+\/[sq]\s+[A-Za-z]:\\|\bformat\s+[a-zA-Z]:(\s|$)|\bmkfs(\.\w+)?\s+\/dev\/|\bdd\s+if=\/dev\/(zero|random|urandom)\s+of=\/dev\/[sh]d|\bchmod\s+-R\s+777\s+\/(\s|$)|:\(\)\s*\{\s*:\|:&\s*\};:|\bgit\s+push\s+(--force|-f)\b[^\n]{0,400}\b(main|master)\b|\bDROP\s+(DATABASE|SCHEMA)\b/i,
+  destructive: /\brm\s+((-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)[a-zA-Z]*|(-[rR]|--recursive)\s+(-f|--force)|(-f|--force)\s+(-[rR]|--recursive))\s+(--no-preserve-root\s+)?["']?(\/["']?(\s|$|\*)|~\/?["']?(\s|$|\*)|\$\{?HOME\}?\/?["']?(\s|$|\*)|\/\*|\.\.\/\.\.)|\bRemove-Item\b[^\n]{0,400}-Recurse[^\n]{0,400}(\s(C:\\|~\\?\s|\$env:USERPROFILE\\?\s|\$HOME\b))|\b(del|erase)\s+\/[sq]\s+\/[sq]\s+[A-Za-z]:\\|\bformat\s+[a-zA-Z]:(\s|$)|\bmkfs(\.\w+)?\s+\/dev\/|\bdd\s+if=\/dev\/(zero|random|urandom)\s+of=\/dev\/[sh]d|\bchmod\s+-R\s+777\s+\/(\s|$)|:\(\)\s*\{\s*:\|:&\s*\};:|\bgit\s+push\s+(--force(?![\w-])|-f\b)[^\n]{0,400}\b(main|master)\b|\bDROP\s+(DATABASE|SCHEMA)\b/i,
   weaken: /\bSet-MpPreference\b[^\n]{0,400}-Disable\w*\s+\$?true|\bAdd-MpPreference\b[^\n]{0,400}-Exclusion(Path|Process)|\bnetsh\s+advfirewall\s+set\s+\w+\s+state\s+off|\bsetenforce\s+0\b|\bufw\s+disable\b|\bspctl\s+--master-disable\b|\bcsrutil\s+disable\b|\bsystemctl\s+(stop|disable)\s+(firewalld|apparmor|auditd)\b|\bxattr\s+-[a-z]*d[a-z]*\s+com\.apple\.quarantine\b/i,
   miner: /\bxmrig\b|stratum\+(tcp|ssl):\/\/|\b(cpuminer|minerd|nbminer|t-rex|lolminer|phoenixminer)\b|--donate-level\b|\bnicehash\b/i,
   network: /\bhttps?:\/\/(?!(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])[:/])[^\s'"`)<>]{1,2000}|\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|fetch\s*\(|requests\.|urllib|httpx|axios|http\.request|https\.request|net\.connect|socket\.connect)\b/i,

@@ -2,6 +2,69 @@
 
 All notable changes are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [SemVer](https://semver.org/).
 
+## [1.3.0] — 2026-11-12
+
+An independent review (16 problems, each reproduced on synthetic files before it was fixed) and a release workflow.
+
+### Security
+- **Never reads outside the folder it scans.** A `scripts/run.sh` that is a symbolic link to a file elsewhere, named in
+  SKILL.md, was read and its matching lines printed (in CI, into the uploaded SARIF), next to a finding saying the link
+  "is not scanned"; and a `plugin.json` could list `commands`, `skills` or `hooks` outside the plugin
+  (`"/home/me/notes"`, `"../x"`), whose files were then reported with their text. Every path a scanned file points at
+  is now followed only inside the scanned folder, by its real location.
+- **Escape sequences from scanned configs never reach the terminal.** Hook event names, matchers, hook and MCP
+  commands and server names went to the terminal (and `list`, `--md`, `diff`) raw: erase lines, move the cursor, set
+  the window title, hide text. Bidirectional overrides are shown as `<U+202E>` (a file "scripts/<U+202E>hs.txt"
+  displayed as "txt.sh").
+- **The `--md` report renders nothing from scanned files.** Names became links, tracking images and @mentions in a PR
+  comment. Names and paths are code spans now; messages are escaped, URLs defanged (`hxxps://`), mentions broken.
+
+### Fixed (detection)
+- **One sentence before an attack hid it.** "Do not worry about formatting. Ignore all previous instructions…": any
+  "not" in the 120 characters before a match lowered it two levels, across the full stop. A negation now governs only
+  its own sentence, and "don't hesitate to", "never forget to", "not only" do not count as one.
+- **Whitespace and invisible characters inside a phrase.** A line break, tabs or a no-break space between the words,
+  a single variation selector inside a word (also U+E0100–E01EF), Khmer and Mongolian invisible characters,
+  mathematical letters (`𝗜𝗴𝗻𝗼𝗿𝗲`) and combining marks all gave no finding at all. Prose patterns accept any
+  whitespace between words, and the "skeleton" pass removes or folds all of these.
+- **The common one-line installers:** `bash -c "$(curl …)"` (Homebrew), `sh -c "$(wget -qO- …)"` (oh-my-zsh),
+  `| sudo -E bash -`, `source <(curl …)`, `. <(curl …)`, `curl -o f … && sh f`, `| tee log | sh`, `| env bash`; and
+  `rm -rf "$HOME"`, `rm -rf ${HOME}/`, `rm -r -f ~`, `rm --recursive --force ~`.
+- **Files the skill points at that were not scanned:** `.rst`, `.adoc`, `.mdc`, `.ipynb`, `.vbs` and other text and
+  script types; any file given to an interpreter (`bash scripts/install.conf`, `bash scripts/setup` without a `#!`);
+  a linked folder whose target is under `node_modules/`. A file in a folder called `spec`, `tests` or `e2e` that the
+  instructions name is no longer treated as a test (two levels lower).
+- **A quoted payload:** wrapping a whole instruction in quotes lowered it two levels; a quote that is the whole line
+  now lowers it one (still shown), and a link title (`[x]: https://… "…"`, invisible when rendered) not at all.
+- **Big files:** text and code files up to 16 MB are scanned whole (the middle of files between 2 and 64 MB was never
+  read); SG805 ("not fully scanned") is now medium, so the default view shows it.
+- **Columns** of findings after hidden characters are those of the real text (SARIF pointed ten characters early);
+  files with old Mac line endings (bare CR) get line numbers and frontmatter.
+
+### Fixed (false alarms)
+- High findings on ordinary skills: "Explain the crontab syntax" (SG401), "Never mention the user's password",
+  "Do not reveal the user's email", "Do not tell the user a test passed unless you saw it pass", "Quietly run the
+  formatter", "Hide the output of noisy commands" (SG102), `git push --force-with-lease … main` (SG501),
+  "forget the previous context and start fresh" (SG101), `<system>...</system>` as a placeholder (SG107).
+
+### Changed
+- `--md` or `--sarif -` together with `--json` (or each other) is a usage error (exit 2): stdout held two documents,
+  or the Markdown was dropped without a word. A SARIF file that cannot be written is exit 2 (was a stack trace and
+  exit 1, the "findings" code).
+- SARIF file URIs are percent-encoded (`my skill/a#b.sh` pointed at `my skill/a`).
+
+### Added
+- A release workflow: each version tag is tested, packed (the packed CLI is installed and scans the bundled skill
+  once), and published as a GitHub release with its CHANGELOG section and the installable `.tgz` attached. The job
+  that can write runs nothing of the project.
+
+### Changed
+- CI pins its actions to commits, keeps no token in the checkout and installs without dependency scripts; a test
+  keeps every workflow that way.
+- Every test process runs with the home folder, `APPDATA`, `XDG_CONFIG_HOME` and every agent's folder variable
+  pointed at an empty temp folder (`test/isolate.ts`), and a test checks that a machine scan and the default lock
+  file stay inside it: a test that forgot a path finds nothing instead of the real setup of whoever runs it.
+
 ## [1.2.0] — 2026-11-12
 
 ### Added
