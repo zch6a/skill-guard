@@ -1,7 +1,7 @@
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseFrontmatter, parseJsonc, parseToml } from './parse.ts';
 import type { Hook, Host, Item, ItemKind, McpServer } from './types.ts';
-import { exists, hasShebang, home, visible, isCodeFile, isDir, isObject, isTextFile, listDir, obj, readJson, readText, str, stringRecord, strings, walkFiles, withFsCache } from './util.ts';
+import { exists, hasShebang, home, visible, isCodeFile, isDir, isFile, isObject, isTextFile, listDir, obj, readJson, readText, str, stringRecord, strings, walkFiles, withFsCache } from './util.ts';
 
 /**
  * Discovery: find every skill, plugin, hook, MCP server and always-loaded
@@ -160,7 +160,7 @@ function localImports(entry: string, limit = 50): string[] {
   const queue = [entry];
   const add = (p: string) => {
     const r = relative(root, p);
-    if (r.startsWith('..') || isAbsolute(r) || seen.has(p) || seen.size >= limit || !exists(p) || isDir(p)) return;
+    if (r.startsWith('..') || isAbsolute(r) || seen.has(p) || seen.size >= limit || !isFile(p)) return;
     seen.add(p);
     queue.push(p);
   };
@@ -228,7 +228,8 @@ function referencedFiles(command: string | string[], base: string, pluginRoot?: 
     // resolve() normalises separators so the path matches what a directory walk returns
     const p = isAbsolute(tok) ? resolve(tok) : resolve(base, tok);
     // A script by extension, or an extensionless file with a shebang (`./bin/setup`).
-    if ((SCRIPT_EXT.test(tok) && exists(p) && !isDir(p)) || (/[\\/]/.test(tok) && exists(p) && !isDir(p) && hasShebang(p))) out.push(p);
+    // Regular files only: a device such as `/dev/stdin` exists, is no folder, and blocks a read forever.
+    if (isFile(p) && (SCRIPT_EXT.test(tok) || (/[\\/]/.test(tok) && hasShebang(p)))) out.push(p);
   }
   return [...new Set(out)];
 }
@@ -389,10 +390,17 @@ function scriptsMentioned(md: string, root?: string): string[] {
   const r = readText(md);
   if (!('text' in r)) return [];
   const bases = [...new Set([dirname(md), root].filter((b): b is string => !!b))];
+  // Text in a file being checked is untrusted: a path it mentions is followed only inside the file's own folder tree
+  // (or the scan root), so `/etc/passwd` or `~/.ssh/config` in backticks never makes the scanner read it.
+  const inside = (f: string) =>
+    bases.some((b) => {
+      const rel = relative(resolve(b), f);
+      return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+    });
   const out = new Set<string>();
   for (const m of r.text.matchAll(/`([^`\n]{1,300})`|^\s*(?:\$\s+)?((?:bash|sh|zsh|python3?|node|pwsh|powershell|\.\/)[^\n]{0,300})$/gm)) {
     const span = m[1] ?? m[2] ?? '';
-    for (const base of bases) for (const f of referencedFiles(span, base)) out.add(f);
+    for (const base of bases) for (const f of referencedFiles(span, base)) if (inside(f)) out.add(f);
   }
   out.delete(resolve(md));
   return [...out];

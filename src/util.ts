@@ -69,6 +69,11 @@ export function isDir(path: string): boolean {
   return stat(path)?.isDirectory() ?? false;
 }
 
+/** A regular file: not a folder, and not a device, FIFO or socket (`/dev/stdin` would block a read forever). */
+export function isFile(path: string): boolean {
+  return stat(path)?.isFile() ?? false;
+}
+
 export function listDir(path: string): string[] {
   return (entries(path) ?? []).map((e) => e.name);
 }
@@ -200,7 +205,10 @@ export function readText(path: string): { text: string } | { skip: string } {
 function readTextUncached(path: string): { text: string } | { skip: string } {
   let size: number;
   try {
-    size = statSync(path).size;
+    const st = statSync(path);
+    // A device or FIFO reports size 0 and never ends (`/dev/zero`) or never answers (`/dev/stdin`).
+    if (!st.isFile()) return { skip: 'not a regular file' };
+    size = st.size;
   } catch (e) {
     return { skip: (e as NodeJS.ErrnoException).code ?? 'unreadable' };
   }

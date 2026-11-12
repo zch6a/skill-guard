@@ -10,6 +10,15 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
   temporary folder without running anything, scans it, and explains the findings before anything is installed. The
   skill treats the scanned content as untrusted and never uses `--trust-ignores`. A test runs every command it gives.
 
+### Security
+- **A file mentioning `/dev/stdin` hung the scan on Linux and macOS.** Discovery follows scripts a Markdown file points
+  at (`` `scripts/setup.sh` ``); a backticked `/dev/stdin` exists and is no folder, so it was read to look for a
+  shebang, and the read waited forever. Found when the public-repository precision run hung in CI
+  (`wshobson/agents`: "Avoid `/dev/stdin`"). Only regular files are read now, never devices or FIFOs.
+- **Paths a checked file mentions are followed only inside its own folder tree** (or the scan root). Before, a
+  backticked absolute path such as `` `/home/you/bin/deploy` `` made the scanner read that file and report it as part
+  of the skill. Hook and MCP commands in configuration still resolve as the agent would run them.
+
 ### Changed
 - README: an animated demo from real output at the top; the rule count badge corrected (43, not 36).
 
