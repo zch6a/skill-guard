@@ -3,6 +3,7 @@
  * Everything here is invented for tests; URLs use reserved example domains or
  * well-known request-bin services that the scanner must recognise.
  */
+import './isolate.ts';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';

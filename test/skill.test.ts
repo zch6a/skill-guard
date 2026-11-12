@@ -69,7 +69,7 @@ test('every skill-guard command the skill gives works', () => {
   const home = mkdtempSync(join(tmpdir(), 'skill-guard-skill-home-'));
   mkdirSync(join(home, '.claude', 'skills'), { recursive: true });
   cpSync(skill, join(home, '.claude', 'skills', 'pdf-helper'), { recursive: true });
-  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: join(home, '.config'), NO_COLOR: '1' };
+  const env = { ...process.env, SKILL_GUARD_HOME: home, HOME: home, USERPROFILE: home, APPDATA: join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: join(home, '.config'), NO_COLOR: '1' };
   const run = (args: string[]) => spawnSync(process.execPath, [BIN, ...args], { encoding: 'utf8', env });
   try {
     // scan <path> --json: the fields the skill names.
